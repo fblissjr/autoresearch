@@ -1,7 +1,12 @@
 """Tests for MLX optimizations: compiled eval, compiled training step."""
 
+import sys
+import os
 import time
 import math
+
+# Ensure project root is on path when running from tests/
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import mlx.core as mx
 import mlx.nn as nn
