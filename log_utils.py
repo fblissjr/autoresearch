@@ -1,11 +1,10 @@
 """
-Project-wide logging framework for autoresearch-mlx.
+Project-wide logging, diagnostics, and structured output for autoresearch-mlx.
 
 Usage:
     from log_utils import logger, is_debug
-
-    logger.info("Training started")
-    logger.debug("Step details: %s", details)  # only shown with --debug
+    from log_utils import sample_memory, format_step_timings
+    from log_utils import hardware_info, save_json, build_run_data, build_bench_data
 
 Enable debug mode by passing --debug flag to any script, or setting
 the AUTORESEARCH_DEBUG=1 environment variable.
@@ -13,7 +12,12 @@ the AUTORESEARCH_DEBUG=1 environment variable.
 
 import logging
 import os
+import platform
 import sys
+import time
+
+import mlx.core as mx
+import orjson
 
 _LOG_FORMAT = "%(asctime)s %(levelname)-5s %(message)s"
 _LOG_DATE_FORMAT = "%H:%M:%S"
@@ -39,3 +43,118 @@ if not logger.handlers:
     handler.setLevel(logging.DEBUG if is_debug else logging.INFO)
     handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATE_FORMAT))
     logger.addHandler(handler)
+
+
+# ---------------------------------------------------------------------------
+# Memory diagnostics
+# ---------------------------------------------------------------------------
+
+def sample_memory(step, interval=10):
+    """Sample active and peak memory every `interval` steps.
+
+    Returns (active_mb, peak_mb) or (None, None) if not a sampling step.
+    """
+    if step % interval != 0:
+        return None, None
+    active_mb = round(mx.get_active_memory() / 1024 / 1024, 1)
+    peak_mb = round(mx.get_peak_memory() / 1024 / 1024, 1)
+    return active_mb, peak_mb
+
+
+def format_step_timings(step_timings):
+    """Convert step_timings tuples to JSON-serializable dicts.
+
+    Each tuple: (step, dt, tok_sec, loss, active_mb, peak_mb).
+    Omits memory fields when None (non-sampling steps).
+    """
+    result = []
+    for s, dt, ts, l, am, pm in step_timings:
+        entry = {"step": s, "dt": dt, "tok_sec": ts, "loss": l}
+        if am is not None:
+            entry["active_mb"] = am
+            entry["peak_mb"] = pm
+        result.append(entry)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Structured JSON output (format_version 0.1)
+# ---------------------------------------------------------------------------
+
+FORMAT_VERSION = "0.1"
+
+
+def hardware_info():
+    """Return hardware metadata dict."""
+    return {
+        "chip": platform.processor() or "Apple Silicon",
+        "memory_gb": None,
+        "os": platform.system(),
+    }
+
+
+def save_json(prefix, data):
+    """Write data to data/<prefix>_<timestamp>.json and print the path.
+
+    Returns the output path.
+    """
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    out_path = os.path.join("data", f"{prefix}_{timestamp}.json")
+    with open(out_path, "wb") as f:
+        f.write(orjson.dumps(data, option=orjson.OPT_INDENT_2))
+    print(f"Results saved to {out_path}")
+    return out_path
+
+
+def build_run_data(*, config, config_dict, param_counts, num_params, depth,
+                   time_budget, total_training_time, total_seconds,
+                   step, total_tokens, avg_tok_sec, peak_memory_mb,
+                   optimizer_groups, compiled, batch_size, total_batch_size,
+                   dmodel_scale, val_bpb, vocab_size, step_timings):
+    """Build the structured run JSON dict."""
+    return {
+        "format_version": FORMAT_VERSION,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "hardware": hardware_info(),
+        "model": {
+            "depth": depth,
+            "n_embd": config.n_embd,
+            "params": num_params,
+            "vocab_size": vocab_size,
+            "config": config_dict,
+            "param_counts": param_counts,
+        },
+        "training": {
+            "budget_seconds": time_budget,
+            "actual_seconds": round(total_training_time, 1),
+            "total_seconds": round(total_seconds, 1),
+            "total_steps": step,
+            "total_tokens": total_tokens,
+            "avg_tok_sec": avg_tok_sec,
+            "peak_memory_mb": round(peak_memory_mb, 1),
+            "optimizer_groups": optimizer_groups,
+            "compiled": compiled,
+            "batch_size": batch_size,
+            "total_batch_size": total_batch_size,
+            "dmodel_scale": round(dmodel_scale, 4),
+        },
+        "result": {
+            "val_bpb": round(val_bpb, 6),
+        },
+        "data": {
+            "source": "climbmix-400b-shuffle",
+            "filtering": "none",
+            "tokenizer": f"bpe-{vocab_size}",
+        },
+        "step_timings": format_step_timings(step_timings),
+    }
+
+
+def build_bench_data(configs):
+    """Build the structured bench JSON dict."""
+    return {
+        "format_version": FORMAT_VERSION,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "hardware": hardware_info(),
+        "configs": configs,
+    }

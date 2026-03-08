@@ -10,17 +10,15 @@ Usage:
 
 import argparse
 import importlib
-import os
-import platform
 import sys
 import time
 
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
-import orjson
 from mlx.utils import tree_flatten
 
+from log_utils import build_bench_data, save_json
 from prepare import MAX_SEQ_LEN, Tokenizer, make_dataloader
 from train import (
     ADAM_BETAS,
@@ -355,21 +353,7 @@ def main():
             print()
 
     # Save results to data/
-    bench_data = {
-        "format_version": "0.1",
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "hardware": {
-            "chip": platform.processor() or "Apple Silicon",
-            "memory_gb": None,
-            "os": platform.system(),
-        },
-        "configs": all_results,
-    }
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    out_path = os.path.join("data", f"bench_{timestamp}.json")
-    with open(out_path, "wb") as f:
-        f.write(orjson.dumps(bench_data, option=orjson.OPT_INDENT_2))
-    print(f"Results saved to {out_path}")
+    save_json("bench", build_bench_data(all_results))
 
 
 if __name__ == "__main__":

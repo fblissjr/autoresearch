@@ -74,11 +74,21 @@ Runs 20 uncompiled + 10 compiled training steps with per-phase instrumentation:
 
 ### log_utils.py
 
-Simple logging framework. Import `logger` and `is_debug`:
+Logging, diagnostics, and output formatting utilities. Keep `train.py` and `prepare.py` minimal -- measurement helpers, memory sampling, step timing serialization, and similar instrumentation belong here, not inline in core scripts.
+
 ```python
-from log_utils import logger, is_debug
+from log_utils import logger, is_debug, sample_memory, format_step_timings
+from log_utils import hardware_info, save_json, build_run_data, build_bench_data
+
 logger.debug("Only shown with --debug")
+active_mb, peak_mb = sample_memory(step)  # periodic memory sampling
+save_json("run", build_run_data(...))     # structured JSON output
+save_json("bench", build_bench_data(...)) # structured JSON output
 ```
+
+## Code Organization Convention
+
+**Keep core scripts thin.** `train.py` is the model + training loop; `prepare.py` is data + eval. Diagnostics, profiling helpers, output formatting, and logging utilities go in `log_utils.py` (or dedicated utility modules if they grow). Do not add instrumentation, benchmark logging, or formatting code directly into core scripts.
 
 ## Git and Privacy Conventions
 

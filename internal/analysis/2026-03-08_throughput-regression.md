@@ -25,7 +25,7 @@ Key timestamps:
 
 No per-step timing was collected in the v0.5.0 run (this analysis motivated adding `step_timings` to the JSON output format). The timeline above is reconstructed from training log output.
 
-Future runs will include `step_timings` array in `data/run_*.json` for precise diagnosis.
+As of v0.5.1, `step_timings` in `data/run_*.json` records per-step `(step, dt, tok_sec, loss)` for all compiled-phase steps, plus `(active_mb, peak_mb)` every 10 steps. `mx.reset_peak_memory()` is called at compiled-phase start so peak reflects only that phase.
 
 ## Correlation Analysis
 
@@ -97,13 +97,23 @@ Future runs will include `step_timings` array in `data/run_*.json` for precise d
 - All 5 optimizer groups receive gradients from step 0 (the filter functions are evaluated at construction time, and all parameter groups have non-zero gradients from the start)
 - Warmup phase (steps 0-10) uses the same optimizer instance, so all states are initialized before compiled phase
 
-## Proposed Diagnostic Experiments
+## Diagnostic Experiments
 
-1. **2-group baseline**: Run with only Muon + AdamW (merge groups 3-5 into fallback). If regression disappears, the extra optimizer states are the cause.
+### Implemented (v0.5.1)
 
-2. **Memory sampling**: Add `mx.get_peak_memory()` every 10 steps to the training loop. Plot memory growth over time.
+1. **Memory sampling**: `mx.get_active_memory()` and `mx.get_peak_memory()` sampled every 10 steps, recorded in `step_timings`. `mx.reset_peak_memory()` at compiled-phase start isolates training-phase memory from warmup. Active vs peak distinguishes fragmentation (active grows, peak flat) from leaks (both grow).
 
-3. **Free optimizer before eval**: Add `del optimizer; gc.collect()` before `evaluate_bpb()`. If eval time drops from 440s to ~205s, memory pressure is confirmed.
+2. **Free optimizer before eval**: Full cleanup before `evaluate_bpb()`:
+   ```python
+   del optimizer, compiled_step
+   del muon_opt, embed_opt, x0_opt, resid_opt, fallback_opt
+   gc.enable(); gc.collect(); mx.clear_cache()
+   ```
+   If eval time drops from 440s to ~205s, memory pressure is confirmed as the eval bottleneck. Deleting `compiled_step` is important -- the compiled graph holds references to optimizer state.
+
+### Pending
+
+3. **2-group baseline**: Run with only Muon + AdamW (merge groups 3-5 into fallback). If regression disappears, the extra optimizer states are the cause.
 
 4. **Fixed LR run**: Remove all schedule logic. If regression still occurs, schedules are eliminated as a cause.
 
@@ -112,9 +122,9 @@ Future runs will include `step_timings` array in `data/run_*.json` for precise d
 ## Proposed Fixes (After Diagnosis)
 
 ### If memory pressure (H1):
-- Free optimizer state before eval: `del optimizer; gc.collect()`
+- Free optimizer state before eval: implemented in v0.5.1 (`del optimizer` + `gc.collect()` + `mx.clear_cache()`)
 - Reduce optimizer groups from 5 to 3: merge resid_lambdas (16 params) into fallback group
-- Explicitly call `mx.metal.clear_cache()` periodically during training
+- Explicitly call `mx.clear_cache()` periodically during training
 
 ### If thermal throttling (H2):
 - Insert `time.sleep(0.05)` every 20 steps (trade 50ms latency for thermal recovery)

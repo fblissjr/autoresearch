@@ -105,12 +105,13 @@ Implemented in `train.py` and `bench_compare.py`. Both write structured JSON to 
   },
   "step_timings": [
     {"step": 11, "dt": 1.6823, "tok_sec": 38955, "loss": 7.123456},
-    "... one entry per compiled-phase step ..."
+    {"step": 20, "dt": 1.6701, "tok_sec": 39239, "loss": 6.543210, "active_mb": 52100.0, "peak_mb": 53200.0},
+    "... every step has (step, dt, tok_sec, loss); every 10th step adds (active_mb, peak_mb) ..."
   ]
 }
 ```
 
-The `step_timings` array enables post-hoc throughput regression analysis without re-running training. Only compiled-phase steps are recorded (warmup steps excluded).
+The `step_timings` array enables post-hoc throughput regression analysis without re-running training. Only compiled-phase steps are recorded (warmup steps excluded). `mx.reset_peak_memory()` is called at compiled-phase start so peak reflects only that phase. Memory fields (`active_mb`, `peak_mb`) are omitted from entries where they weren't sampled (every 10th step only) to keep the JSON compact.
 
 ### Bench output (`data/bench_*.json`)
 

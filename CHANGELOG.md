@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.2
+
+- Free optimizer state before eval: delete all 5 optimizer groups and compiled_step closure, re-enable GC, clear MLX cache
+- Add memory diagnostics: periodic active/peak memory sampling in step_timings via log_utils.sample_memory()
+- Reset peak memory at compiled phase start for phase-isolated measurement
+- Move structured JSON output (build_run_data, save_json, hardware_info) from train.py to log_utils.py
+- Remove inline orjson/platform/os imports from train.py (now handled by log_utils)
+- Download 20 data shards (up from 3) for 10x document diversity
+- Add code organization convention to AGENTS.md: keep core scripts thin, utilities in log_utils.py
+
 ## 0.5.1
 
 - Structured JSON output: restructure run/bench JSON from flat dict to nested format with format_version, hardware, model, training, result, data blocks

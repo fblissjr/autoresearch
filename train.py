@@ -5,8 +5,6 @@ Usage: uv run train.py
 """
 
 import gc
-import os
-import platform
 import time
 from dataclasses import dataclass, asdict
 from functools import partial
@@ -14,9 +12,9 @@ from functools import partial
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
-import orjson
 from mlx.utils import tree_map, tree_flatten
 
+from log_utils import sample_memory, build_run_data, save_json
 from prepare import MAX_SEQ_LEN, TIME_BUDGET, Tokenizer, make_dataloader, evaluate_bpb
 
 # ---------------------------------------------------------------------------
@@ -502,7 +500,8 @@ if __name__ == "__main__":
         return loss
 
     total_training_time = 0
-    step_timings = []  # (step, dt, tok_sec, loss) for compiled-phase steps
+    step_timings = []  # (step, dt, tok_sec, loss, active_mb, peak_mb) for compiled-phase steps
+    mx.reset_peak_memory()  # reset so peak reflects compiled phase only
 
     while True:
         t0 = time.time()
@@ -542,7 +541,10 @@ if __name__ == "__main__":
 
         train_loss_f = train_loss_val.item()
         tok_per_sec_step = int(TOTAL_BATCH_SIZE / dt)
-        step_timings.append((step, round(dt, 4), tok_per_sec_step, round(train_loss_f, 6)))
+
+        active_mb, peak_mb = sample_memory(step)
+
+        step_timings.append((step, round(dt, 4), tok_per_sec_step, round(train_loss_f, 6), active_mb, peak_mb))
 
         if train_loss_f > 100:
             print("FAIL")
@@ -555,7 +557,10 @@ if __name__ == "__main__":
         pct_done = 100 * progress
         remaining = max(0, TIME_BUDGET - total_training_time)
 
-        print(f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {debiased_smooth_loss:.6f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec_step:,} | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
+        line = f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {debiased_smooth_loss:.6f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec_step:,} | epoch: {epoch} | remaining: {remaining:.0f}s"
+        if active_mb is not None:
+            line += f" | mem: {active_mb:.0f}/{peak_mb:.0f}MB"
+        print(line + "    ", end="", flush=True)
 
         if (step + 1) % 5000 == 0:
             gc.collect()
@@ -568,6 +573,14 @@ if __name__ == "__main__":
     print()  # newline after \r training log
 
     total_tokens = step * TOTAL_BATCH_SIZE
+
+    # Free optimizer state before eval to reduce memory pressure
+    # (optimizer momentum/variance buffers ~10GB with 5 groups)
+    del optimizer, compiled_step
+    del muon_opt, embed_opt, x0_opt, resid_opt, fallback_opt
+    gc.enable()
+    gc.collect()
+    mx.clear_cache()
 
     # Final evaluation (compiled model + larger batch for speed)
     compiled_model = mx.compile(model)
@@ -593,52 +606,14 @@ if __name__ == "__main__":
     print(f"dmodel_scale:     {dmodel_scale:.4f}")
 
     # Save results to data/
-    timestamp_iso = time.strftime("%Y-%m-%dT%H:%M:%S")
-    run_data = {
-        "format_version": "0.1",
-        "timestamp": timestamp_iso,
-        "hardware": {
-            "chip": platform.processor() or "Apple Silicon",
-            "memory_gb": None,
-            "os": platform.system(),
-        },
-        "model": {
-            "depth": DEPTH,
-            "n_embd": config.n_embd,
-            "params": num_params,
-            "vocab_size": config.vocab_size,
-            "config": asdict(config),
-            "param_counts": param_counts,
-        },
-        "training": {
-            "budget_seconds": TIME_BUDGET,
-            "actual_seconds": round(total_training_time, 1),
-            "total_seconds": round(t_end - t_start, 1),
-            "total_steps": step,
-            "total_tokens": total_tokens,
-            "avg_tok_sec": avg_tok_sec,
-            "peak_memory_mb": round(peak_mem_mb, 1),
-            "optimizer_groups": 5,
-            "compiled": grad_accum_steps == 1,
-            "batch_size": DEVICE_BATCH_SIZE,
-            "total_batch_size": TOTAL_BATCH_SIZE,
-            "dmodel_scale": round(dmodel_scale, 4),
-        },
-        "result": {
-            "val_bpb": round(val_bpb, 6),
-        },
-        "data": {
-            "source": "climbmix-400b-shuffle",
-            "filtering": "none",
-            "tokenizer": f"bpe-{config.vocab_size}",
-        },
-        "step_timings": [
-            {"step": s, "dt": dt, "tok_sec": ts, "loss": l}
-            for s, dt, ts, l in step_timings
-        ],
-    }
-    timestamp_file = time.strftime("%Y%m%d_%H%M%S")
-    out_path = os.path.join("data", f"run_{timestamp_file}.json")
-    with open(out_path, "wb") as f:
-        f.write(orjson.dumps(run_data, option=orjson.OPT_INDENT_2))
-    print(f"Results saved to {out_path}")
+    run_data = build_run_data(
+        config=config, config_dict=asdict(config), param_counts=param_counts,
+        num_params=num_params, depth=DEPTH, time_budget=TIME_BUDGET,
+        total_training_time=total_training_time, total_seconds=t_end - t_start,
+        step=step, total_tokens=total_tokens, avg_tok_sec=avg_tok_sec,
+        peak_memory_mb=peak_mem_mb, optimizer_groups=5,
+        compiled=grad_accum_steps == 1, batch_size=DEVICE_BATCH_SIZE,
+        total_batch_size=TOTAL_BATCH_SIZE, dmodel_scale=dmodel_scale,
+        val_bpb=val_bpb, vocab_size=config.vocab_size, step_timings=step_timings,
+    )
+    save_json("run", run_data)
