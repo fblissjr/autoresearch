@@ -465,10 +465,8 @@ if __name__ == "__main__":
     remaining_steps = estimated_total_steps - WARMUP_STEPS
     print(f"\nEstimated total steps: {estimated_total_steps} (avg step: {avg_step_time*1000:.0f}ms)")
 
-    # Build step-based LR schedules matching the original time-based schedule:
-    # - warmup for WARMUP_RATIO of steps (currently 0.0)
-    # - constant LR
-    # - cosine warmdown for last WARMDOWN_RATIO of steps
+    # Swap in step-based LR schedules on existing optimizers (preserves
+    # optimizer state and step counters -- no private API hacking needed).
     warmup_end = int(WARMUP_RATIO * estimated_total_steps)
     warmdown_start = int((1.0 - WARMDOWN_RATIO) * estimated_total_steps)
     warmdown_steps = estimated_total_steps - warmdown_start
@@ -486,51 +484,12 @@ if __name__ == "__main__":
         scheds.append(optim.cosine_decay(peak_lr, decay_steps=max(1, warmdown_steps), end=end_lr))
         return optim.join_schedules(scheds, bounds)
 
-    matrix_schedule = make_lr_schedule(MATRIX_LR)
-    embed_schedule = make_lr_schedule(EMBEDDING_LR * dmodel_scale)
-    x0_schedule = make_lr_schedule(SCALAR_LR * dmodel_scale)
-    resid_schedule = make_lr_schedule(SCALAR_LR * 0.01 * dmodel_scale)
-    fallback_schedule = make_lr_schedule(UNEMBEDDING_LR * dmodel_scale)
-
-    # Create fresh MultiOptimizer with step-based schedules (same 5 groups)
-    muon_opt = optim.Muon(
-        learning_rate=matrix_schedule,
-        momentum=0.95,
-        weight_decay=WEIGHT_DECAY,
-    )
-    embed_opt = optim.AdamW(
-        learning_rate=embed_schedule,
-        betas=list(ADAM_BETAS),
-        eps=1e-10,
-        weight_decay=0.0,
-    )
-    x0_opt = optim.AdamW(
-        learning_rate=x0_schedule,
-        betas=list(X0_BETAS),
-        eps=1e-10,
-        weight_decay=0.0,
-    )
-    resid_opt = optim.AdamW(
-        learning_rate=resid_schedule,
-        betas=list(ADAM_BETAS),
-        eps=1e-10,
-        weight_decay=0.0,
-    )
-    fallback_opt = optim.AdamW(
-        learning_rate=fallback_schedule,
-        betas=list(ADAM_BETAS),
-        eps=1e-10,
-        weight_decay=0.0,
-    )
-    optimizer = optim.MultiOptimizer(
-        [muon_opt, embed_opt, x0_opt, resid_opt, fallback_opt],
-        [is_muon_param, is_embedding, is_x0_lambdas, is_resid_lambdas],
-    )
-    # Advance step counters past warmup so LR schedule aligns
+    # Swap schedules into existing optimizer instances (step counters already correct)
     all_opts = [muon_opt, embed_opt, x0_opt, resid_opt, fallback_opt]
-    for opt in all_opts:
-        opt._state['step'] = mx.array(step, dtype=mx.uint64)
-    mx.eval(optimizer.state)
+    peak_lrs = [MATRIX_LR, EMBEDDING_LR * dmodel_scale, SCALAR_LR * dmodel_scale,
+                SCALAR_LR * 0.01 * dmodel_scale, UNEMBEDDING_LR * dmodel_scale]
+    for opt, peak_lr in zip(all_opts, peak_lrs):
+        opt._schedulers['learning_rate'] = make_lr_schedule(peak_lr)
 
     # Build compiled training step
     state = [model.state, optimizer.state]
