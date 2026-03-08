@@ -142,7 +142,7 @@ logger.debug("Only shown with --debug")
 - **Dict-based layers**: `self.layers` uses `{"l0": ..., "l1": ...}` keys (not `[Block(...)]` or `{"0": ...}`). MLX's `tree_unflatten` converts string-digit keys back to lists, which breaks `MultiOptimizer`. The `"l"` prefix prevents this.
 - **MultiOptimizer filters**: 4 filter functions route params to groups 1-4; unmatched params fall through to group 5 (fallback). Order matters -- first match wins.
 - **Compiled step + grad_accum**: The compiled training step only works when `grad_accum_steps == 1`. With `grad_accum > 1`, the fallback is uncompiled (~15% slower) because intermediate micro-steps need explicit eval for accumulation.
-- **Step counter workaround**: `optimizer._state['step']` manipulation (Phase 2 init) is a private API workaround. Must be set on all 5 sub-optimizers. If MLX adds a public setter, switch to it.
+- **Schedule swap**: Phase 2 swaps LR schedules via `opt._schedulers['learning_rate']` on existing optimizer instances. Preserves Adam momentum buffers and step counters naturally (no `_state['step']` hacking).
 - **Muon momentum**: Fixed at 0.95 (reference ramps 0.85->0.95 over 300 steps). Deliberate simplification for mx.compile compatibility.
 - **Weight decay**: Fixed at 0.2 (reference decays as `WD * (1-progress)`). Same mx.compile limitation.
 - **Session logging**: Update `internal/log/log_YYYY-MM-DD.md` every iteration with what was done, decisions made, and open questions.
