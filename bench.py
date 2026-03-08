@@ -1,10 +1,12 @@
 """
 Performance profiling for autoresearch-mlx training.
-Runs ~20 training steps, instruments each phase, reports breakdown.
+Runs ~20 training steps (uncompiled + compiled), instruments each phase, reports breakdown.
 Usage: uv run bench.py
 """
 
 import time
+from functools import partial
+
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
@@ -131,6 +133,48 @@ print(f"{'total':12s}: {avg['total']*1000:7.1f}ms")
 print(f"{'tok/sec':12s}: {avg_tok:,}")
 
 # ---------------------------------------------------------------------------
+# Compiled training (10 steps, compare to uncompiled)
+# ---------------------------------------------------------------------------
+
+print()
+print(f"=== Compiled Training (10 steps) ===")
+
+# Fresh optimizer for compiled path
+compiled_optimizer = optim.AdamW(
+    learning_rate=MATRIX_LR,
+    betas=list(ADAM_BETAS),
+    eps=1e-10,
+    weight_decay=0.0,
+)
+
+state = [model.state, compiled_optimizer.state]
+
+@partial(mx.compile, inputs=state, outputs=state)
+def compiled_step(x, y):
+    loss, grads = nn.value_and_grad(model, loss_fn)(model, x, y)
+    compiled_optimizer.update(model, grads)
+    return loss
+
+compiled_data = []
+for step in range(10):
+    x, y, epoch = next(train_loader)
+    t0 = time.perf_counter()
+    loss = compiled_step(x, y)
+    mx.eval(loss)
+    dt = time.perf_counter() - t0
+    tok_per_sec = int(TOTAL_BATCH_SIZE / dt)
+    compiled_data.append({'total': dt, 'loss': loss.item(), 'tok_per_sec': tok_per_sec})
+    print(f"Step {step:3d}: total={dt*1000:6.0f}ms  tok/s={tok_per_sec:6,}  loss={loss.item():.4f}")
+
+compiled_steady = compiled_data[2:]  # skip first 2 for compilation warmup
+avg_compiled_total = sum(s['total'] for s in compiled_steady) / len(compiled_steady)
+avg_compiled_tok = int(sum(s['tok_per_sec'] for s in compiled_steady) / len(compiled_steady))
+
+print(f"\nCompiled avg (steps 2-9): {avg_compiled_total*1000:.1f}ms, {avg_compiled_tok:,} tok/sec")
+speedup = avg['total'] / avg_compiled_total
+print(f"Speedup vs uncompiled: {speedup:.2f}x")
+
+# ---------------------------------------------------------------------------
 # Memory
 # ---------------------------------------------------------------------------
 
@@ -150,30 +194,51 @@ print(f"norm_weight_cache_entries: {len(norm_keys)} (keys: {norm_keys})")
 # ---------------------------------------------------------------------------
 
 print()
-print(f"=== Eval (2 steps) ===")
+print(f"=== Eval (batch=32 vs batch=64, compiled vs uncompiled) ===")
 
 token_bytes = get_token_bytes()
-val_loader = make_dataloader(tokenizer, DEVICE_BATCH_SIZE, MAX_SEQ_LEN, "val")
-eval_steps_full = EVAL_TOKENS // (DEVICE_BATCH_SIZE * MAX_SEQ_LEN)
 
-eval_times = []
-for i in range(2):
-    t0 = time.perf_counter()
-    x, y, _ = next(val_loader)
-    loss_flat = model(x, y, reduction='none').reshape(-1)
-    y_flat = y.reshape(-1)
-    nbytes = token_bytes[y_flat]
-    mask = (nbytes > 0).astype(mx.float32)
-    _ = mx.sum(loss_flat * mask).item()
-    _ = mx.sum(nbytes).item()
-    dt = time.perf_counter() - t0
-    eval_times.append(dt)
-    print(f"  eval step {i}: {dt*1000:.0f}ms")
+for eval_batch, label in [(DEVICE_BATCH_SIZE, "batch=32"), (64, "batch=64")]:
+    val_loader = make_dataloader(tokenizer, eval_batch, MAX_SEQ_LEN, "val")
+    eval_steps_full = EVAL_TOKENS // (eval_batch * MAX_SEQ_LEN)
 
-avg_eval = sum(eval_times) / len(eval_times)
-projected = avg_eval * eval_steps_full
-print(f"per_step_eval: {avg_eval*1000:.0f}ms")
-print(f"projected_full_eval ({eval_steps_full} steps): {projected:.0f}s")
+    # Uncompiled
+    eval_times = []
+    for i in range(3):
+        t0 = time.perf_counter()
+        x, y, _ = next(val_loader)
+        loss_flat = model(x, y, reduction='none').reshape(-1)
+        y_flat = y.reshape(-1)
+        nbytes = token_bytes[y_flat]
+        mask = (nbytes > 0).astype(mx.float32)
+        _ = mx.sum(loss_flat * mask).item()
+        _ = mx.sum(nbytes).item()
+        dt = time.perf_counter() - t0
+        eval_times.append(dt)
+
+    avg_eval = sum(eval_times[1:]) / len(eval_times[1:])  # skip first
+    projected = avg_eval * eval_steps_full
+    print(f"  {label} uncompiled: {avg_eval*1000:.0f}ms/step, projected {eval_steps_full} steps = {projected:.0f}s")
+
+    # Compiled forward
+    compiled_model = mx.compile(model)
+    val_loader = make_dataloader(tokenizer, eval_batch, MAX_SEQ_LEN, "val")
+    eval_times_compiled = []
+    for i in range(3):
+        t0 = time.perf_counter()
+        x, y, _ = next(val_loader)
+        loss_flat = compiled_model(x, y, reduction='none').reshape(-1)
+        y_flat = y.reshape(-1)
+        nbytes = token_bytes[y_flat]
+        mask = (nbytes > 0).astype(mx.float32)
+        _ = mx.sum(loss_flat * mask).item()
+        _ = mx.sum(nbytes).item()
+        dt = time.perf_counter() - t0
+        eval_times_compiled.append(dt)
+
+    avg_compiled = sum(eval_times_compiled[1:]) / len(eval_times_compiled[1:])
+    projected_compiled = avg_compiled * eval_steps_full
+    print(f"  {label} compiled:   {avg_compiled*1000:.0f}ms/step, projected {eval_steps_full} steps = {projected_compiled:.0f}s")
 
 # ---------------------------------------------------------------------------
 # Loss sanity check

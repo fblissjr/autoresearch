@@ -7,6 +7,7 @@ Usage: uv run train.py
 import gc
 import time
 from dataclasses import dataclass, asdict
+from functools import partial
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -346,15 +347,8 @@ if __name__ == "__main__":
     assert TOTAL_BATCH_SIZE % tokens_per_fwdbwd == 0
     grad_accum_steps = TOTAL_BATCH_SIZE // tokens_per_fwdbwd
 
-    # Start simple: single AdamW for all parameters to get working first
-    # TODO: switch to MultiOptimizer with Muon for matrix params once working
-    optimizer = optim.AdamW(
-        learning_rate=MATRIX_LR,
-        betas=list(ADAM_BETAS),
-        eps=1e-10,
-        weight_decay=0.0,
-    )
-    initial_lr = MATRIX_LR
+    WARMUP_STEPS = 11  # uncompiled steps to absorb graph compilation overhead
+    EVAL_BATCH_SIZE = 64  # larger eval batch (2x training) for faster eval
 
     train_loader = make_dataloader(tokenizer, DEVICE_BATCH_SIZE, MAX_SEQ_LEN, "train")
     x, y, epoch = next(train_loader)  # prefetch first batch
@@ -362,25 +356,26 @@ if __name__ == "__main__":
     print(f"Time budget: {TIME_BUDGET}s")
     print(f"Gradient accumulation steps: {grad_accum_steps}")
 
+    # -----------------------------------------------------------------------
+    # Phase 1: Warmup (uncompiled) -- absorb compilation, measure step time
+    # -----------------------------------------------------------------------
+
+    # TODO: switch to MultiOptimizer with Muon for matrix params once working
+    optimizer = optim.AdamW(
+        learning_rate=MATRIX_LR,
+        betas=list(ADAM_BETAS),
+        eps=1e-10,
+        weight_decay=0.0,
+    )
+
     loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
-
-    # TODO: mx.compile on training step. Current blocker: LR schedule is time-based (changes
-    # every step as a Python float). mx.compile bakes Python scalars as traced constants, so
-    # optimizer.learning_rate changes aren't visible to the compiled function. Options:
-    # 1. Convert to step-based schedule via optim.linear_schedule / optim.cosine_decay
-    # 2. Store LR as mx.array input to compiled function
-    # 3. Use shapeless=True (risky -- may not help with scalar constants anyway)
-
-    # -----------------------------------------------------------------------
-    # Training loop
-    # -----------------------------------------------------------------------
 
     t_start_training = time.time()
     smooth_train_loss = 0
-    total_training_time = 0
     step = 0
+    warmup_step_times = []
 
-    while True:
+    for step in range(WARMUP_STEPS):
         t0 = time.time()
 
         accumulated_grads = None
@@ -398,62 +393,156 @@ if __name__ == "__main__":
 
             x, y, epoch = next(train_loader)
 
-        # Average gradients and loss
         accumulated_grads = tree_map(lambda g: g * (1.0 / grad_accum_steps), accumulated_grads)
         train_loss_val = train_loss_val * (1.0 / grad_accum_steps)
-
-        # Progress and schedules
-        progress = min(total_training_time / TIME_BUDGET, 1.0)
-        lrm = get_lr_multiplier(progress)
-        optimizer.learning_rate = initial_lr * lrm
 
         optimizer.update(model, accumulated_grads)
         del accumulated_grads
         mx.eval(train_loss_val, model.parameters(), optimizer.state)
 
         train_loss_f = train_loss_val.item()
-
-        # Fast fail: abort if loss is exploding
         if train_loss_f > 100:
             print("FAIL")
             exit(1)
 
-        t1 = time.time()
-        dt = t1 - t0
+        dt = time.time() - t0
+        warmup_step_times.append(dt)
 
-        if step > 10:
-            total_training_time += dt
-
-        # Logging
         ema_beta = 0.9
         smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * train_loss_f
         debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(step + 1))
-        pct_done = 100 * progress
         tok_per_sec = int(TOTAL_BATCH_SIZE / dt)
-        remaining = max(0, TIME_BUDGET - total_training_time)
+        print(f"\rstep {step:05d} (warmup) | loss: {debiased_smooth_loss:.6f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | epoch: {epoch}    ", end="", flush=True)
 
-        print(f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
-
-        # GC management (Python's GC causes stalls)
         if step == 0:
             gc.collect()
             gc.freeze()
             gc.disable()
-        elif (step + 1) % 5000 == 0:
+
+    step = WARMUP_STEPS
+
+    # -----------------------------------------------------------------------
+    # Phase 2: Compiled training with step-based LR schedule
+    # -----------------------------------------------------------------------
+
+    # Estimate total steps from steady-state step times (skip first 2 for compilation)
+    steady_times = warmup_step_times[2:]
+    avg_step_time = sum(steady_times) / len(steady_times)
+    estimated_total_steps = int(TIME_BUDGET / avg_step_time) + WARMUP_STEPS
+    remaining_steps = estimated_total_steps - WARMUP_STEPS
+    print(f"\nEstimated total steps: {estimated_total_steps} (avg step: {avg_step_time*1000:.0f}ms)")
+
+    # Build step-based LR schedule matching the original time-based schedule:
+    # - warmup for WARMUP_RATIO of steps (currently 0.0)
+    # - constant LR
+    # - cosine warmdown for last WARMDOWN_RATIO of steps
+    warmup_end = int(WARMUP_RATIO * estimated_total_steps)
+    warmdown_start = int((1.0 - WARMDOWN_RATIO) * estimated_total_steps)
+    warmdown_steps = estimated_total_steps - warmdown_start
+
+    schedules = []
+    boundaries = []
+
+    if warmup_end > 0:
+        schedules.append(optim.linear_schedule(0.0, MATRIX_LR, steps=warmup_end))
+        boundaries.append(warmup_end)
+
+    # Constant phase -> cosine warmdown
+    constant_steps = max(1, warmdown_start - warmup_end)
+    schedules.append(optim.linear_schedule(MATRIX_LR, MATRIX_LR, steps=constant_steps))
+    boundaries.append(warmdown_start)
+
+    warmdown_end_lr = MATRIX_LR * FINAL_LR_FRAC
+    schedules.append(optim.cosine_decay(MATRIX_LR, decay_steps=max(1, warmdown_steps), end=warmdown_end_lr))
+
+    lr_schedule = optim.join_schedules(schedules, boundaries)
+
+    # Create fresh optimizer with step-based schedule
+    optimizer = optim.AdamW(
+        learning_rate=lr_schedule,
+        betas=list(ADAM_BETAS),
+        eps=1e-10,
+        weight_decay=0.0,
+    )
+    # Advance optimizer step counter past warmup steps so LR schedule is correct
+    optimizer._state['step'] = mx.array(step, dtype=mx.uint64)
+    mx.eval(optimizer.state)
+
+    # Build compiled training step
+    state = [model.state, optimizer.state]
+
+    @partial(mx.compile, inputs=state, outputs=state)
+    def compiled_step(x, y):
+        loss, grads = nn.value_and_grad(model, loss_fn)(model, x, y)
+        optimizer.update(model, grads)
+        return loss
+
+    total_training_time = 0
+
+    while True:
+        t0 = time.time()
+
+        # For grad_accum > 1, only the last micro-step uses compiled_step
+        # (intermediate micro-steps need explicit eval for accumulation)
+        if grad_accum_steps == 1:
+            train_loss_val = compiled_step(x, y)
+            mx.eval(train_loss_val)
+            x, y, epoch = next(train_loader)
+        else:
+            accumulated_grads = None
+            train_loss_val = mx.array(0.0)
+
+            for micro_step in range(grad_accum_steps):
+                loss, grads = nn.value_and_grad(model, loss_fn)(model, x, y)
+                mx.eval(loss, grads)
+                train_loss_val = train_loss_val + loss
+
+                if accumulated_grads is None:
+                    accumulated_grads = grads
+                else:
+                    accumulated_grads = tree_map(lambda a, g: a + g, accumulated_grads, grads)
+
+                x, y, epoch = next(train_loader)
+
+            accumulated_grads = tree_map(lambda g: g * (1.0 / grad_accum_steps), accumulated_grads)
+            train_loss_val = train_loss_val * (1.0 / grad_accum_steps)
+
+            optimizer.update(model, accumulated_grads)
+            del accumulated_grads
+            mx.eval(train_loss_val, model.parameters(), optimizer.state)
+
+        dt = time.time() - t0
+        total_training_time += dt
+
+        train_loss_f = train_loss_val.item()
+        if train_loss_f > 100:
+            print("FAIL")
+            exit(1)
+
+        ema_beta = 0.9
+        smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * train_loss_f
+        debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(step + 1))
+        progress = min(total_training_time / TIME_BUDGET, 1.0)
+        pct_done = 100 * progress
+        tok_per_sec = int(TOTAL_BATCH_SIZE / dt)
+        remaining = max(0, TIME_BUDGET - total_training_time)
+
+        print(f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {debiased_smooth_loss:.6f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
+
+        if (step + 1) % 5000 == 0:
             gc.collect()
 
         step += 1
 
-        # Time's up -- but only stop after warmup steps so we don't count compilation
-        if step > 10 and total_training_time >= TIME_BUDGET:
+        if total_training_time >= TIME_BUDGET:
             break
 
     print()  # newline after \r training log
 
     total_tokens = step * TOTAL_BATCH_SIZE
 
-    # Final evaluation
-    val_bpb = evaluate_bpb(model, tokenizer, DEVICE_BATCH_SIZE)
+    # Final evaluation (with larger batch for speed)
+    val_bpb = evaluate_bpb(model, tokenizer, EVAL_BATCH_SIZE)
 
     # Final summary
     t_end = time.time()
