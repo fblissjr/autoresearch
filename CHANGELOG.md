@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2
+
+- Add bench.py profiling script (per-phase timing, memory, eval projection)
+- Wrap train.py execution in __main__ guard to allow importing model/config without side effects
+
 ## 0.2.1
 
 - Cache sliding window attention masks (avoid recomputation every forward pass)

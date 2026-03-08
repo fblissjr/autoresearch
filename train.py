@@ -282,14 +282,7 @@ DEVICE_BATCH_SIZE = 32   # per-device batch size (tuned for Apple Silicon)
 # Setup: tokenizer, model, optimizer, dataloader
 # ---------------------------------------------------------------------------
 
-t_start = time.time()
-mx.random.seed(42)
-
-tokenizer = Tokenizer.from_directory()
-vocab_size = tokenizer.get_vocab_size()
-print(f"Vocab size: {vocab_size:,}")
-
-def build_model_config(depth):
+def build_model_config(depth, vocab_size):
     base_dim = depth * ASPECT_RATIO
     model_dim = ((base_dim + HEAD_DIM - 1) // HEAD_DIM) * HEAD_DIM
     num_heads = model_dim // HEAD_DIM
@@ -299,44 +292,6 @@ def build_model_config(depth):
         window_pattern=WINDOW_PATTERN,
     )
 
-config = build_model_config(DEPTH)
-print(f"Model config: {asdict(config)}")
-
-model = GPT(config)
-model.init_weights()
-mx.eval(model.parameters())
-
-param_counts = model.num_scaling_params()
-print("Parameter counts:")
-for key, value in param_counts.items():
-    print(f"  {key:24s}: {value:,}")
-num_params = param_counts['total']
-num_flops_per_token = 6 * num_params  # simplified estimate
-print(f"Estimated FLOPs per token: {num_flops_per_token:e}")
-
-tokens_per_fwdbwd = DEVICE_BATCH_SIZE * MAX_SEQ_LEN
-assert TOTAL_BATCH_SIZE % tokens_per_fwdbwd == 0
-grad_accum_steps = TOTAL_BATCH_SIZE // tokens_per_fwdbwd
-
-# ---------------------------------------------------------------------------
-# Optimizer setup using MultiOptimizer with Muon + AdamW
-# ---------------------------------------------------------------------------
-
-# Start simple: single AdamW for all parameters to get working first
-# TODO: switch to MultiOptimizer with Muon for matrix params once working
-optimizer = optim.AdamW(
-    learning_rate=MATRIX_LR,
-    betas=list(ADAM_BETAS),
-    eps=1e-10,
-    weight_decay=0.0,
-)
-initial_lr = MATRIX_LR
-
-train_loader = make_dataloader(tokenizer, DEVICE_BATCH_SIZE, MAX_SEQ_LEN, "train")
-x, y, epoch = next(train_loader)  # prefetch first batch
-
-print(f"Time budget: {TIME_BUDGET}s")
-print(f"Gradient accumulation steps: {grad_accum_steps}")
 
 # Schedules (all based on progress = training_time / TIME_BUDGET)
 
@@ -363,110 +318,154 @@ def get_weight_decay(progress):
 def loss_fn(model, x, y):
     return model(x, y, reduction='mean')
 
-loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
 
-# TODO: mx.compile on training step. Current blocker: LR schedule is time-based (changes
-# every step as a Python float). mx.compile bakes Python scalars as traced constants, so
-# optimizer.learning_rate changes aren't visible to the compiled function. Options:
-# 1. Convert to step-based schedule via optim.linear_schedule / optim.cosine_decay
-# 2. Store LR as mx.array input to compiled function
-# 3. Use shapeless=True (risky -- may not help with scalar constants anyway)
+if __name__ == "__main__":
+    t_start = time.time()
+    mx.random.seed(42)
 
-# ---------------------------------------------------------------------------
-# Training loop
-# ---------------------------------------------------------------------------
+    tokenizer = Tokenizer.from_directory()
+    vocab_size = tokenizer.get_vocab_size()
+    print(f"Vocab size: {vocab_size:,}")
 
-t_start_training = time.time()
-smooth_train_loss = 0
-total_training_time = 0
-step = 0
+    config = build_model_config(DEPTH, vocab_size)
+    print(f"Model config: {asdict(config)}")
 
-while True:
-    t0 = time.time()
+    model = GPT(config)
+    model.init_weights()
+    mx.eval(model.parameters())
 
-    accumulated_grads = None
-    train_loss_val = mx.array(0.0)
+    param_counts = model.num_scaling_params()
+    print("Parameter counts:")
+    for key, value in param_counts.items():
+        print(f"  {key:24s}: {value:,}")
+    num_params = param_counts['total']
+    num_flops_per_token = 6 * num_params
+    print(f"Estimated FLOPs per token: {num_flops_per_token:e}")
 
-    for micro_step in range(grad_accum_steps):
-        loss, grads = loss_and_grad_fn(model, x, y)
-        mx.eval(loss, grads)
-        train_loss_val = train_loss_val + loss
+    tokens_per_fwdbwd = DEVICE_BATCH_SIZE * MAX_SEQ_LEN
+    assert TOTAL_BATCH_SIZE % tokens_per_fwdbwd == 0
+    grad_accum_steps = TOTAL_BATCH_SIZE // tokens_per_fwdbwd
 
-        if accumulated_grads is None:
-            accumulated_grads = grads
-        else:
-            accumulated_grads = tree_map(lambda a, g: a + g, accumulated_grads, grads)
+    # Start simple: single AdamW for all parameters to get working first
+    # TODO: switch to MultiOptimizer with Muon for matrix params once working
+    optimizer = optim.AdamW(
+        learning_rate=MATRIX_LR,
+        betas=list(ADAM_BETAS),
+        eps=1e-10,
+        weight_decay=0.0,
+    )
+    initial_lr = MATRIX_LR
 
-        x, y, epoch = next(train_loader)
+    train_loader = make_dataloader(tokenizer, DEVICE_BATCH_SIZE, MAX_SEQ_LEN, "train")
+    x, y, epoch = next(train_loader)  # prefetch first batch
 
-    # Average gradients and loss
-    accumulated_grads = tree_map(lambda g: g * (1.0 / grad_accum_steps), accumulated_grads)
-    train_loss_val = train_loss_val * (1.0 / grad_accum_steps)
+    print(f"Time budget: {TIME_BUDGET}s")
+    print(f"Gradient accumulation steps: {grad_accum_steps}")
 
-    # Progress and schedules
-    progress = min(total_training_time / TIME_BUDGET, 1.0)
-    lrm = get_lr_multiplier(progress)
-    optimizer.learning_rate = initial_lr * lrm
+    loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
 
-    optimizer.update(model, accumulated_grads)
-    del accumulated_grads
-    mx.eval(train_loss_val, model.parameters(), optimizer.state)
+    # TODO: mx.compile on training step. Current blocker: LR schedule is time-based (changes
+    # every step as a Python float). mx.compile bakes Python scalars as traced constants, so
+    # optimizer.learning_rate changes aren't visible to the compiled function. Options:
+    # 1. Convert to step-based schedule via optim.linear_schedule / optim.cosine_decay
+    # 2. Store LR as mx.array input to compiled function
+    # 3. Use shapeless=True (risky -- may not help with scalar constants anyway)
 
-    train_loss_f = train_loss_val.item()
+    # -----------------------------------------------------------------------
+    # Training loop
+    # -----------------------------------------------------------------------
 
-    # Fast fail: abort if loss is exploding
-    if train_loss_f > 100:
-        print("FAIL")
-        exit(1)
+    t_start_training = time.time()
+    smooth_train_loss = 0
+    total_training_time = 0
+    step = 0
 
-    t1 = time.time()
-    dt = t1 - t0
+    while True:
+        t0 = time.time()
 
-    if step > 10:
-        total_training_time += dt
+        accumulated_grads = None
+        train_loss_val = mx.array(0.0)
 
-    # Logging
-    ema_beta = 0.9
-    smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * train_loss_f
-    debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(step + 1))
-    pct_done = 100 * progress
-    tok_per_sec = int(TOTAL_BATCH_SIZE / dt)
-    remaining = max(0, TIME_BUDGET - total_training_time)
+        for micro_step in range(grad_accum_steps):
+            loss, grads = loss_and_grad_fn(model, x, y)
+            mx.eval(loss, grads)
+            train_loss_val = train_loss_val + loss
 
-    print(f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
+            if accumulated_grads is None:
+                accumulated_grads = grads
+            else:
+                accumulated_grads = tree_map(lambda a, g: a + g, accumulated_grads, grads)
 
-    # GC management (Python's GC causes stalls)
-    if step == 0:
-        gc.collect()
-        gc.freeze()
-        gc.disable()
-    elif (step + 1) % 5000 == 0:
-        gc.collect()
+            x, y, epoch = next(train_loader)
 
-    step += 1
+        # Average gradients and loss
+        accumulated_grads = tree_map(lambda g: g * (1.0 / grad_accum_steps), accumulated_grads)
+        train_loss_val = train_loss_val * (1.0 / grad_accum_steps)
 
-    # Time's up -- but only stop after warmup steps so we don't count compilation
-    if step > 10 and total_training_time >= TIME_BUDGET:
-        break
+        # Progress and schedules
+        progress = min(total_training_time / TIME_BUDGET, 1.0)
+        lrm = get_lr_multiplier(progress)
+        optimizer.learning_rate = initial_lr * lrm
 
-print()  # newline after \r training log
+        optimizer.update(model, accumulated_grads)
+        del accumulated_grads
+        mx.eval(train_loss_val, model.parameters(), optimizer.state)
 
-total_tokens = step * TOTAL_BATCH_SIZE
+        train_loss_f = train_loss_val.item()
 
-# Final evaluation
-val_bpb = evaluate_bpb(model, tokenizer, DEVICE_BATCH_SIZE)
+        # Fast fail: abort if loss is exploding
+        if train_loss_f > 100:
+            print("FAIL")
+            exit(1)
 
-# Final summary
-t_end = time.time()
-peak_mem_bytes = mx.get_peak_memory()
-peak_mem_mb = peak_mem_bytes / 1024 / 1024
+        t1 = time.time()
+        dt = t1 - t0
 
-print("---")
-print(f"val_bpb:          {val_bpb:.6f}")
-print(f"training_seconds: {total_training_time:.1f}")
-print(f"total_seconds:    {t_end - t_start:.1f}")
-print(f"peak_memory_mb:   {peak_mem_mb:.1f}")
-print(f"total_tokens_M:   {total_tokens / 1e6:.1f}")
-print(f"num_steps:        {step}")
-print(f"num_params_M:     {num_params / 1e6:.1f}")
-print(f"depth:            {DEPTH}")
+        if step > 10:
+            total_training_time += dt
+
+        # Logging
+        ema_beta = 0.9
+        smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * train_loss_f
+        debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(step + 1))
+        pct_done = 100 * progress
+        tok_per_sec = int(TOTAL_BATCH_SIZE / dt)
+        remaining = max(0, TIME_BUDGET - total_training_time)
+
+        print(f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
+
+        # GC management (Python's GC causes stalls)
+        if step == 0:
+            gc.collect()
+            gc.freeze()
+            gc.disable()
+        elif (step + 1) % 5000 == 0:
+            gc.collect()
+
+        step += 1
+
+        # Time's up -- but only stop after warmup steps so we don't count compilation
+        if step > 10 and total_training_time >= TIME_BUDGET:
+            break
+
+    print()  # newline after \r training log
+
+    total_tokens = step * TOTAL_BATCH_SIZE
+
+    # Final evaluation
+    val_bpb = evaluate_bpb(model, tokenizer, DEVICE_BATCH_SIZE)
+
+    # Final summary
+    t_end = time.time()
+    peak_mem_bytes = mx.get_peak_memory()
+    peak_mem_mb = peak_mem_bytes / 1024 / 1024
+
+    print("---")
+    print(f"val_bpb:          {val_bpb:.6f}")
+    print(f"training_seconds: {total_training_time:.1f}")
+    print(f"total_seconds:    {t_end - t_start:.1f}")
+    print(f"peak_memory_mb:   {peak_mem_mb:.1f}")
+    print(f"total_tokens_M:   {total_tokens / 1e6:.1f}")
+    print(f"num_steps:        {step}")
+    print(f"num_params_M:     {num_params / 1e6:.1f}")
+    print(f"depth:            {DEPTH}")
