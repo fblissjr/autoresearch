@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1
+
+- Cache sliding window attention masks (avoid recomputation every forward pass)
+- Evaluate gradients per micro-step to reduce peak memory in gradient accumulation
+- Include loss in mx.eval call to avoid potential double-evaluation
+- Remove manual GQA head repeat (SDPA handles mismatched head counts natively)
+- Use Python scalar in loss denominator (avoid mx.array type promotion)
+- Release accumulated_grads before evaluation to reduce peak memory
+
 ## 0.2.0
 
 - Port from PyTorch/CUDA to pure MLX for Apple Silicon

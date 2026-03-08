@@ -46,13 +46,20 @@ def has_ve(layer_idx, n_layer):
     return layer_idx % 2 == (n_layer - 1) % 2
 
 
+_sliding_window_mask_cache = {}
+
 def make_sliding_window_mask(T, window_size):
-    """Build additive causal sliding window mask."""
-    row = mx.arange(T)
-    col = mx.arange(T)
-    diff = mx.expand_dims(row, axis=1) - mx.expand_dims(col, axis=0)
-    valid = (diff >= 0) & (diff < window_size)
-    return mx.where(valid, mx.array(0.0, dtype=mx.float32), mx.array(float("-inf"), dtype=mx.float32))
+    """Build additive causal sliding window mask. Cached by (T, window_size)."""
+    key = (T, window_size)
+    if key not in _sliding_window_mask_cache:
+        row = mx.arange(T)
+        col = mx.arange(T)
+        diff = mx.expand_dims(row, axis=1) - mx.expand_dims(col, axis=0)
+        valid = (diff >= 0) & (diff < window_size)
+        mask = mx.where(valid, mx.zeros(1, dtype=mx.float32), mx.full(1, float("-inf"), dtype=mx.float32))
+        mx.eval(mask)
+        _sliding_window_mask_cache[key] = mask
+    return _sliding_window_mask_cache[key]
 
 
 class CausalSelfAttention(nn.Module):
@@ -97,12 +104,6 @@ class CausalSelfAttention(nn.Module):
         q = q.transpose(0, 2, 1, 3)
         k = k.transpose(0, 2, 1, 3)
         v = v.transpose(0, 2, 1, 3)
-
-        # Handle GQA: repeat KV heads if needed
-        if self.n_kv_head < self.n_head:
-            repeats = self.n_head // self.n_kv_head
-            k = mx.repeat(k, repeats, axis=1)
-            v = mx.repeat(v, repeats, axis=1)
 
         # Build sliding window causal mask
         if window_size is not None and window_size < T:
@@ -241,7 +242,7 @@ class GPT(nn.Module):
             per_token_loss = nn.losses.cross_entropy(logits_flat, targets_flat, reduction='none')
             mask = (targets_flat != -1).astype(mx.float32)
             if reduction == 'mean':
-                loss = mx.sum(per_token_loss * mask) / mx.maximum(mx.sum(mask), mx.array(1.0))
+                loss = mx.sum(per_token_loss * mask) / mx.maximum(mx.sum(mask), 1.0)
                 return loss
             else:
                 return per_token_loss * mask
@@ -364,6 +365,13 @@ def loss_fn(model, x, y):
 
 loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
 
+# TODO: mx.compile on training step. Current blocker: LR schedule is time-based (changes
+# every step as a Python float). mx.compile bakes Python scalars as traced constants, so
+# optimizer.learning_rate changes aren't visible to the compiled function. Options:
+# 1. Convert to step-based schedule via optim.linear_schedule / optim.cosine_decay
+# 2. Store LR as mx.array input to compiled function
+# 3. Use shapeless=True (risky -- may not help with scalar constants anyway)
+
 # ---------------------------------------------------------------------------
 # Training loop
 # ---------------------------------------------------------------------------
@@ -377,11 +385,12 @@ while True:
     t0 = time.time()
 
     accumulated_grads = None
-    train_loss_val = None
+    train_loss_val = mx.array(0.0)
 
     for micro_step in range(grad_accum_steps):
         loss, grads = loss_and_grad_fn(model, x, y)
-        train_loss_val = loss
+        mx.eval(loss, grads)
+        train_loss_val = train_loss_val + loss
 
         if accumulated_grads is None:
             accumulated_grads = grads
@@ -390,18 +399,18 @@ while True:
 
         x, y, epoch = next(train_loader)
 
-    # Average gradients
+    # Average gradients and loss
     accumulated_grads = tree_map(lambda g: g * (1.0 / grad_accum_steps), accumulated_grads)
+    train_loss_val = train_loss_val * (1.0 / grad_accum_steps)
 
     # Progress and schedules
     progress = min(total_training_time / TIME_BUDGET, 1.0)
     lrm = get_lr_multiplier(progress)
-
-    # Update learning rate
     optimizer.learning_rate = initial_lr * lrm
 
     optimizer.update(model, accumulated_grads)
-    mx.eval(model.parameters(), optimizer.state)
+    del accumulated_grads
+    mx.eval(train_loss_val, model.parameters(), optimizer.state)
 
     train_loss_f = train_loss_val.item()
 
