@@ -22,6 +22,12 @@ uv run prepare.py
 uv run train.py
 ```
 
+## MLX optimization approach
+
+MLX-specific optimizations in this port draw on patterns documented in [mlx-skills](https://github.com/fblissjr/mlx-skills/), a collection of MLX optimization knowledge for Apple Silicon ML development. Key techniques: `mx.compile` with state tracking, `mx.fast` ops, cache management for masks/norms, and MultiOptimizer (Muon + AdamW) for mixed-optimizer training.
+
+Development session logs are in `internal/log/` for transparency.
+
 ## What changed from the original
 
 - Replaced PyTorch/CUDA with pure MLX for Apple Silicon
@@ -44,10 +50,16 @@ Hi have a look at program.md and let's kick off a new experiment! let's do the s
 ## Project structure
 
 ```
-prepare.py      - constants, data prep + runtime utilities (do not modify)
 train.py        - model, optimizer, training loop (agent modifies this)
+prepare.py      - constants, data prep + runtime utilities (do not modify)
+bench.py        - performance profiling (compiled vs uncompiled, per-phase timing)
+analysis.py     - experiment results analysis
+log_utils.py    - project-wide logging framework (--debug flag support)
 program.md      - agent instructions
 pyproject.toml  - dependencies
+tests/          - test suite (compiled eval, MultiOptimizer, etc.)
+data/           - output files (charts, analysis artifacts)
+internal/log/   - session-by-session development notes
 ```
 
 ## License

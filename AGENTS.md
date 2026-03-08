@@ -117,9 +117,17 @@ logger.debug("Only shown with --debug")
 | Eval batch=64 | Done | No speedup (compute-bound, not batch-overhead) |
 | Mask caching | Done | Avoids recomputation each forward pass |
 | Per-step grad eval | Done | Reduces peak memory in grad accumulation |
-| Muon optimizer | TODO | Quality improvement (MultiOptimizer KeyError) |
+| Muon optimizer | Done | Muon for 2D+ matrix params, AdamW for embeddings/scalars |
 | Batch=64 investigation | TODO | Memory headroom exists (53GB/192GB) |
 | Async data loading | Skip | Only 1.2% of step time |
+
+## Implementation Notes
+
+- **Dict-based layers**: `self.layers` uses `{"l0": ..., "l1": ...}` keys (not `[Block(...)]` or `{"0": ...}`). MLX's `tree_unflatten` converts string-digit keys back to lists, which breaks `MultiOptimizer`. The `"l"` prefix prevents this.
+- **MultiOptimizer filter**: `is_muon_param(path, weight)` routes 2D+ weights in `layers` (excluding `ve_gate`) to Muon, everything else to AdamW.
+- **Compiled step + grad_accum**: The compiled training step only works when `grad_accum_steps == 1`. With `grad_accum > 1`, the fallback is uncompiled (~15% slower) because intermediate micro-steps need explicit eval for accumulation.
+- **Step counter workaround**: `optimizer._state['step']` manipulation (Phase 2 init) is a private API workaround. If MLX adds a public setter, switch to it.
+- **Session logging**: Update `internal/log/log_YYYY-MM-DD.md` every iteration with what was done, decisions made, and open questions.
 
 ## Experiment Workflow
 

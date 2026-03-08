@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0
+
+- Muon optimizer for 2D+ matrix weights via MultiOptimizer (Muon + AdamW)
+- Convert model layers and value_embeds to dict with non-digit keys to fix tree_unflatten list conversion bug
+- Move window_sizes from nn.Module attribute to config method (removes list from parameter tree)
+- Compiled eval in final evaluation pass (~7% faster eval)
+- Fix warmup step time estimation: skip first 4 steps instead of 2
+- Document grad_accum > 1 compiled fallback performance implication
+- Separate LR schedules per optimizer group (MATRIX_LR for Muon, EMBEDDING_LR for AdamW)
+
+## 0.3.1
+
+- Add bench_compare.py: comparative benchmark against external implementations
+- fwd+bwd throughput identical to coderef (MLX compiles to same kernels)
+- Built-in AdamW 1.46x faster than coderef's custom per-param AdamW at D=8
+
 ## 0.3.0
 
 - mx.compile on training step: 15% speedup (40.5K -> 46.5K tok/sec)

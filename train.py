@@ -30,6 +30,19 @@ class GPTConfig:
     n_embd: int = 768
     window_pattern: str = "SSSL"
 
+    def compute_window_sizes(self):
+        pattern = self.window_pattern.upper()
+        assert all(c in "SL" for c in pattern)
+        long_window = self.sequence_len
+        short_window = long_window // 2
+        char_to_window = {"L": long_window, "S": short_window}
+        sizes = []
+        for layer_idx in range(self.n_layer):
+            char = pattern[layer_idx % len(pattern)]
+            sizes.append(char_to_window[char])
+        sizes[-1] = long_window
+        return sizes
+
 
 _norm_weight_cache = {}
 
@@ -150,9 +163,10 @@ class GPT(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.window_sizes = self._compute_window_sizes(config)
         self.wte = nn.Embedding(config.vocab_size, config.n_embd)
-        self.layers = [Block(config, i) for i in range(config.n_layer)]
+        # Use "l0", "l1", ... keys (not "0", "1") so tree_unflatten doesn't
+        # convert them back to lists, which breaks MultiOptimizer's tree_map.
+        self.layers = {f"l{i}": Block(config, i) for i in range(config.n_layer)}
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.resid_lambdas = mx.ones(config.n_layer)
         self.x0_lambdas = mx.zeros(config.n_layer)
@@ -162,7 +176,7 @@ class GPT(nn.Module):
         self.value_embeds = {}
         for i in range(config.n_layer):
             if has_ve(i, config.n_layer):
-                self.value_embeds[str(i)] = nn.Embedding(config.vocab_size, kv_dim)
+                self.value_embeds[f"v{i}"] = nn.Embedding(config.vocab_size, kv_dim)
 
     def init_weights(self):
         n_embd = self.config.n_embd
@@ -171,7 +185,7 @@ class GPT(nn.Module):
         self.wte.weight = mx.random.normal(shape=self.wte.weight.shape)
         self.lm_head.weight = mx.random.normal(shape=self.lm_head.weight.shape) * 0.001
         # Transformer blocks
-        for block in self.layers:
+        for block in self.layers.values():
             block.attn.c_q.weight = mx.random.uniform(-s, s, shape=block.attn.c_q.weight.shape)
             block.attn.c_k.weight = mx.random.uniform(-s, s, shape=block.attn.c_k.weight.shape)
             block.attn.c_v.weight = mx.random.uniform(-s, s, shape=block.attn.c_v.weight.shape)
@@ -185,7 +199,7 @@ class GPT(nn.Module):
         for ve in self.value_embeds.values():
             ve.weight = mx.random.uniform(-s, s, shape=ve.weight.shape)
         # Gate weights init to zero (sigmoid(0)=0.5, scaled by 2 -> 1.0 = neutral)
-        for block in self.layers:
+        for block in self.layers.values():
             if block.attn._has_ve:
                 block.attn.ve_gate.weight = mx.zeros_like(block.attn.ve_gate.weight)
         # Cast embeddings to bf16
@@ -193,25 +207,13 @@ class GPT(nn.Module):
         for ve in self.value_embeds.values():
             ve.weight = ve.weight.astype(mx.bfloat16)
 
-    def _compute_window_sizes(self, config):
-        pattern = config.window_pattern.upper()
-        assert all(c in "SL" for c in pattern)
-        long_window = config.sequence_len
-        short_window = long_window // 2
-        char_to_window = {"L": long_window, "S": short_window}
-        window_sizes = []
-        for layer_idx in range(config.n_layer):
-            char = pattern[layer_idx % len(pattern)]
-            window_sizes.append(char_to_window[char])
-        window_sizes[-1] = long_window
-        return window_sizes
 
     def num_scaling_params(self):
         wte_n = self.wte.weight.size
         ve_n = sum(ve.weight.size for ve in self.value_embeds.values())
         lm_n = self.lm_head.weight.size
         layers_n = sum(p.size for _, p in tree_flatten(
-            [block.parameters() for block in self.layers]
+            {k: block.parameters() for k, block in self.layers.items()}
         ))
         scalars_n = self.resid_lambdas.size + self.x0_lambdas.size
         total = wte_n + ve_n + lm_n + layers_n + scalars_n
@@ -221,15 +223,15 @@ class GPT(nn.Module):
         }
 
     def __call__(self, idx, targets=None, reduction='mean'):
-        B, T = idx.shape
+        window_sizes = self.config.compute_window_sizes()
 
         x = self.wte(idx)
         x = norm(x)
         x0 = x
-        for i, block in enumerate(self.layers):
+        for i in range(self.config.n_layer):
             x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
-            ve = self.value_embeds[str(i)](idx) if str(i) in self.value_embeds else None
-            x = block(x, ve, self.window_sizes[i])
+            ve = self.value_embeds[f"v{i}"](idx) if f"v{i}" in self.value_embeds else None
+            x = self.layers[f"l{i}"](x, ve, window_sizes[i])
         x = norm(x)
 
         logits = self.lm_head(x)
@@ -360,13 +362,23 @@ if __name__ == "__main__":
     # Phase 1: Warmup (uncompiled) -- absorb compilation, measure step time
     # -----------------------------------------------------------------------
 
-    # TODO: switch to MultiOptimizer with Muon for matrix params once working
-    optimizer = optim.AdamW(
+    # Muon for 2D+ matrix weights in transformer layers (excluding small ve_gate)
+    # AdamW for everything else (embeddings, scalars, biases, 1D params)
+    def is_muon_param(path, weight):
+        return 'layers' in path and weight.ndim >= 2 and 've_gate' not in path
+
+    muon_opt = optim.Muon(
         learning_rate=MATRIX_LR,
+        momentum=0.95,
+        weight_decay=WEIGHT_DECAY,
+    )
+    adam_opt = optim.AdamW(
+        learning_rate=EMBEDDING_LR,
         betas=list(ADAM_BETAS),
         eps=1e-10,
         weight_decay=0.0,
     )
+    optimizer = optim.MultiOptimizer([muon_opt, adam_opt], [is_muon_param])
 
     loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
 
@@ -425,14 +437,14 @@ if __name__ == "__main__":
     # Phase 2: Compiled training with step-based LR schedule
     # -----------------------------------------------------------------------
 
-    # Estimate total steps from steady-state step times (skip first 2 for compilation)
-    steady_times = warmup_step_times[2:]
+    # Estimate total steps from steady-state step times (skip first 4 for compilation)
+    steady_times = warmup_step_times[4:]
     avg_step_time = sum(steady_times) / len(steady_times)
     estimated_total_steps = int(TIME_BUDGET / avg_step_time) + WARMUP_STEPS
     remaining_steps = estimated_total_steps - WARMUP_STEPS
     print(f"\nEstimated total steps: {estimated_total_steps} (avg step: {avg_step_time*1000:.0f}ms)")
 
-    # Build step-based LR schedule matching the original time-based schedule:
+    # Build step-based LR schedules matching the original time-based schedule:
     # - warmup for WARMUP_RATIO of steps (currently 0.0)
     # - constant LR
     # - cosine warmdown for last WARMDOWN_RATIO of steps
@@ -440,32 +452,39 @@ if __name__ == "__main__":
     warmdown_start = int((1.0 - WARMDOWN_RATIO) * estimated_total_steps)
     warmdown_steps = estimated_total_steps - warmdown_start
 
-    schedules = []
-    boundaries = []
+    def make_lr_schedule(peak_lr):
+        scheds = []
+        bounds = []
+        if warmup_end > 0:
+            scheds.append(optim.linear_schedule(0.0, peak_lr, steps=warmup_end))
+            bounds.append(warmup_end)
+        constant_steps = max(1, warmdown_start - warmup_end)
+        scheds.append(optim.linear_schedule(peak_lr, peak_lr, steps=constant_steps))
+        bounds.append(warmdown_start)
+        end_lr = peak_lr * FINAL_LR_FRAC
+        scheds.append(optim.cosine_decay(peak_lr, decay_steps=max(1, warmdown_steps), end=end_lr))
+        return optim.join_schedules(scheds, bounds)
 
-    if warmup_end > 0:
-        schedules.append(optim.linear_schedule(0.0, MATRIX_LR, steps=warmup_end))
-        boundaries.append(warmup_end)
+    matrix_schedule = make_lr_schedule(MATRIX_LR)
+    embedding_schedule = make_lr_schedule(EMBEDDING_LR)
 
-    # Constant phase -> cosine warmdown
-    constant_steps = max(1, warmdown_start - warmup_end)
-    schedules.append(optim.linear_schedule(MATRIX_LR, MATRIX_LR, steps=constant_steps))
-    boundaries.append(warmdown_start)
-
-    warmdown_end_lr = MATRIX_LR * FINAL_LR_FRAC
-    schedules.append(optim.cosine_decay(MATRIX_LR, decay_steps=max(1, warmdown_steps), end=warmdown_end_lr))
-
-    lr_schedule = optim.join_schedules(schedules, boundaries)
-
-    # Create fresh optimizer with step-based schedule
-    optimizer = optim.AdamW(
-        learning_rate=lr_schedule,
+    # Create fresh MultiOptimizer with step-based schedules
+    muon_opt = optim.Muon(
+        learning_rate=matrix_schedule,
+        momentum=0.95,
+        weight_decay=WEIGHT_DECAY,
+    )
+    adam_opt = optim.AdamW(
+        learning_rate=embedding_schedule,
         betas=list(ADAM_BETAS),
         eps=1e-10,
         weight_decay=0.0,
     )
-    # Advance optimizer step counter past warmup steps so LR schedule is correct
-    optimizer._state['step'] = mx.array(step, dtype=mx.uint64)
+    optimizer = optim.MultiOptimizer([muon_opt, adam_opt], [is_muon_param])
+    # Advance optimizer step counters past warmup steps so LR schedule is correct
+    # (private API workaround -- if MLX adds a public setter, switch to it)
+    muon_opt._state['step'] = mx.array(step, dtype=mx.uint64)
+    adam_opt._state['step'] = mx.array(step, dtype=mx.uint64)
     mx.eval(optimizer.state)
 
     # Build compiled training step
@@ -482,8 +501,9 @@ if __name__ == "__main__":
     while True:
         t0 = time.time()
 
-        # For grad_accum > 1, only the last micro-step uses compiled_step
-        # (intermediate micro-steps need explicit eval for accumulation)
+        # Compiled step only works when grad_accum_steps == 1 (single fused graph).
+        # With grad_accum > 1, we fall back to uncompiled training because intermediate
+        # micro-steps need explicit eval for gradient accumulation -- this is ~15% slower.
         if grad_accum_steps == 1:
             train_loss_val = compiled_step(x, y)
             mx.eval(train_loss_val)
@@ -541,8 +561,9 @@ if __name__ == "__main__":
 
     total_tokens = step * TOTAL_BATCH_SIZE
 
-    # Final evaluation (with larger batch for speed)
-    val_bpb = evaluate_bpb(model, tokenizer, EVAL_BATCH_SIZE)
+    # Final evaluation (compiled model + larger batch for speed)
+    compiled_model = mx.compile(model)
+    val_bpb = evaluate_bpb(compiled_model, tokenizer, EVAL_BATCH_SIZE)
 
     # Final summary
     t_end = time.time()

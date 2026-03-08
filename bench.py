@@ -15,7 +15,8 @@ from mlx.utils import tree_map
 from prepare import MAX_SEQ_LEN, Tokenizer, make_dataloader, get_token_bytes, EVAL_TOKENS
 from train import (
     GPT, build_model_config, _sliding_window_mask_cache, _norm_weight_cache,
-    loss_fn, DEPTH, DEVICE_BATCH_SIZE, TOTAL_BATCH_SIZE, MATRIX_LR, ADAM_BETAS,
+    loss_fn, DEPTH, DEVICE_BATCH_SIZE, TOTAL_BATCH_SIZE,
+    MATRIX_LR, ADAM_BETAS, EMBEDDING_LR, WEIGHT_DECAY,
 )
 
 NUM_STEPS = 20
@@ -45,12 +46,12 @@ print()
 # Optimizer + dataloader
 # ---------------------------------------------------------------------------
 
-optimizer = optim.AdamW(
-    learning_rate=MATRIX_LR,
-    betas=list(ADAM_BETAS),
-    eps=1e-10,
-    weight_decay=0.0,
-)
+def is_muon_param(path, weight):
+    return 'layers' in path and weight.ndim >= 2 and 've_gate' not in path
+
+muon_opt = optim.Muon(learning_rate=MATRIX_LR, momentum=0.95, weight_decay=WEIGHT_DECAY)
+adam_opt = optim.AdamW(learning_rate=EMBEDDING_LR, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
+optimizer = optim.MultiOptimizer([muon_opt, adam_opt], [is_muon_param])
 
 tokens_per_fwdbwd = DEVICE_BATCH_SIZE * MAX_SEQ_LEN
 grad_accum_steps = TOTAL_BATCH_SIZE // tokens_per_fwdbwd
@@ -140,12 +141,9 @@ print()
 print(f"=== Compiled Training (10 steps) ===")
 
 # Fresh optimizer for compiled path
-compiled_optimizer = optim.AdamW(
-    learning_rate=MATRIX_LR,
-    betas=list(ADAM_BETAS),
-    eps=1e-10,
-    weight_decay=0.0,
-)
+compiled_muon = optim.Muon(learning_rate=MATRIX_LR, momentum=0.95, weight_decay=WEIGHT_DECAY)
+compiled_adam = optim.AdamW(learning_rate=EMBEDDING_LR, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
+compiled_optimizer = optim.MultiOptimizer([compiled_muon, compiled_adam], [is_muon_param])
 
 state = [model.state, compiled_optimizer.state]
 
