@@ -88,4 +88,4 @@ Total test time: ~2-3 minutes (no training needed).
 
 ## Status
 
-Proposed. Pending test script implementation and validation.
+Implemented (v0.5.4): EVAL_BATCH_SIZE changed from 64 to 32 in train.py. Full validation pending next training run.

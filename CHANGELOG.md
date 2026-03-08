@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.4
+
+- Reduce EVAL_BATCH_SIZE from 64 to 32 to avoid 14GB memory surge in fragmented Metal allocator post-training
+- Update AGENTS.md: optimization table to v0.5.4, add Known Limitations section, bench.py caveat, prepare.py conformance note
+- Mark eval-bottleneck analysis as implemented
+
 ## 0.5.3
 
 - Remove `build_run_data` from log_utils.py (zero-value 20-kwarg wrapper); inline dict in train.py

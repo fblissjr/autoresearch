@@ -336,7 +336,7 @@ if __name__ == "__main__":
     grad_accum_steps = TOTAL_BATCH_SIZE // tokens_per_fwdbwd
 
     WARMUP_STEPS = 11  # uncompiled steps to absorb graph compilation overhead
-    EVAL_BATCH_SIZE = 64  # larger eval batch (2x training) for faster eval
+    EVAL_BATCH_SIZE = 32  # match training batch; batch=64 causes 14GB memory surge post-training
 
     train_loader = make_dataloader(tokenizer, DEVICE_BATCH_SIZE, MAX_SEQ_LEN, "train")
     x, y, epoch = next(train_loader)  # prefetch first batch
@@ -585,7 +585,7 @@ if __name__ == "__main__":
     gc.collect()
     mx.clear_cache()
 
-    # Final evaluation (compiled model + larger batch for speed)
+    # Final evaluation (compiled model, batch=32 to avoid memory surge)
     compiled_model = mx.compile(model)
     val_bpb = evaluate_bpb(compiled_model, tokenizer, EVAL_BATCH_SIZE)
 

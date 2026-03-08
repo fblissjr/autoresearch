@@ -64,6 +64,8 @@ The `__main__` guard allows importing model classes and constants (GPT, GPTConfi
 
 Numpy usage in prepare.py is intentional: CPU-side data packing in `make_dataloader` uses a numpy buffer (`row_buffer`) for efficient token packing, converting to `mx.array` once per batch yield. No numpy in the training hot path.
 
+Port verified line-by-line against PyTorch/CUDA reference. All differences are mechanical API translations; evaluate_bpb is numerically equivalent. See [analysis](internal/analysis/2026-03-08_prepare-py-conformance.md).
+
 ### bench.py
 
 Runs 20 uncompiled + 10 compiled training steps with per-phase instrumentation:
@@ -71,6 +73,8 @@ Runs 20 uncompiled + 10 compiled training steps with per-phase instrumentation:
 - Compiled vs uncompiled comparison
 - Eval timing at batch=32 and batch=64, compiled vs uncompiled
 - Memory and cache verification
+
+**Caveat**: Eval time projections assume clean memory state (~10GB). After a full training run (~49GB active), actual eval times are ~2x higher due to Metal allocator fragmentation.
 
 ### log_utils.py
 
@@ -121,18 +125,21 @@ save_json("bench", build_bench_data(...)) # structured JSON output
 - **mx.compile**: Fuses element-wise ops. Use `inputs/outputs` for state tracking. Avoid Python scalar constants that change (causes recompilation).
 - **Type promotion**: Use Python scalars (not `mx.array`) for constants in bf16 code
 
-## Current Optimization State (v0.5.0)
+## Current Optimization State (v0.5.4)
 
 | Optimization | Status | Impact |
 |-------------|--------|--------|
 | mx.compile on training | Done | 15% speedup (40.5K -> 46.5K tok/sec) |
 | Step-based LR schedule | Done | Enables mx.compile (no recompilation) |
-| Eval batch=64 | Done | No speedup (compute-bound, not batch-overhead) |
+| Eval batch=32 | Done | Avoids 14GB memory surge, eliminates post-training fragmentation bottleneck |
 | Mask caching | Done | Avoids recomputation each forward pass |
 | Per-step grad eval | Done | Reduces peak memory in grad accumulation |
 | Muon optimizer | Done | Muon for 2D+ matrix params, AdamW for rest |
 | 5-group LR routing | Done | Per-param LR/betas matching PyTorch baseline |
-| Batch=64 investigation | TODO | Memory headroom exists (53GB/192GB) |
+| Optimizer cleanup before eval | Done | Saves ~38s (partial; fragmentation is dominant factor) |
+| Memory diagnostics | Done | Periodic active/peak sampling in step_timings |
+| training_peak_mb capture | Done | Separates training peak (49GB) from eval peak (63GB) |
+| Batch=64 investigation | Done | Training crashes; eval causes 14GB surge. Reverted to batch=32 |
 | Async data loading | Skip | Only 1.2% of step time |
 
 ## 5-Group MultiOptimizer Routing
@@ -156,6 +163,12 @@ save_json("bench", build_bench_data(...)) # structured JSON output
 - **Muon momentum**: Fixed at 0.95 (reference ramps 0.85->0.95 over 300 steps). Deliberate simplification for mx.compile compatibility.
 - **Weight decay**: Fixed at 0.2 (reference decays as `WD * (1-progress)`). Same mx.compile limitation.
 - **Session logging**: Update `internal/log/log_YYYY-MM-DD.md` every iteration with what was done, decisions made, and open questions.
+
+## Known Limitations
+
+- **bench.py eval projections assume clean memory**: Projections are accurate for compute cost but do not account for Metal allocator fragmentation after sustained training. Actual eval time is ~2x projected.
+- **Memory is flat during training**: 45.4GB active / 49.4GB peak throughout all 193 steps. No leaks, no growth. Fragmentation is in Metal's allocator pool, not in our code.
+- **Eval is the time bottleneck**: Eval (~400s at batch=64) takes longer than training (~300s). The 63GB eval peak (batch=64) is 14GB above training peak. Reduced to batch=32 in v0.5.4 to avoid the surge.
 
 ## Analysis & Investigations
 
