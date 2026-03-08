@@ -108,7 +108,7 @@ logger.debug("Only shown with --debug")
 - **mx.compile**: Fuses element-wise ops. Use `inputs/outputs` for state tracking. Avoid Python scalar constants that change (causes recompilation).
 - **Type promotion**: Use Python scalars (not `mx.array`) for constants in bf16 code
 
-## Current Optimization State (v0.3.0)
+## Current Optimization State (v0.5.0)
 
 | Optimization | Status | Impact |
 |-------------|--------|--------|
@@ -117,16 +117,31 @@ logger.debug("Only shown with --debug")
 | Eval batch=64 | Done | No speedup (compute-bound, not batch-overhead) |
 | Mask caching | Done | Avoids recomputation each forward pass |
 | Per-step grad eval | Done | Reduces peak memory in grad accumulation |
-| Muon optimizer | Done | Muon for 2D+ matrix params, AdamW for embeddings/scalars |
+| Muon optimizer | Done | Muon for 2D+ matrix params, AdamW for rest |
+| 5-group LR routing | Done | Per-param LR/betas matching PyTorch baseline |
 | Batch=64 investigation | TODO | Memory headroom exists (53GB/192GB) |
 | Async data loading | Skip | Only 1.2% of step time |
+
+## 5-Group MultiOptimizer Routing
+
+| Group | Optimizer | Params | LR | Betas | Filter |
+|-------|-----------|--------|-----|-------|--------|
+| 1 | Muon | layers 2D+ weights (excl. ve_gate) | MATRIX_LR (0.04) | momentum=0.95 | `is_muon_param` |
+| 2 | AdamW | wte + value_embeds | EMBEDDING_LR * dmodel_scale | (0.8, 0.95) | `is_embedding` |
+| 3 | AdamW | x0_lambdas | SCALAR_LR * dmodel_scale | (0.96, 0.95) | `is_x0_lambdas` |
+| 4 | AdamW | resid_lambdas | SCALAR_LR * 0.01 * dmodel_scale | (0.8, 0.95) | `is_resid_lambdas` |
+| 5 (fallback) | AdamW | lm_head + ve_gate | UNEMBEDDING_LR * dmodel_scale | (0.8, 0.95) | (default) |
+
+**Note**: `dmodel_scale = (n_embd / 768)^-0.5`. At depth=8 (n_embd=512), dmodel_scale=1.225. The reference implementation does NOT apply dmodel_scale to scalar LRs (groups 3-4); our code does. This is a deliberate deviation -- empirical comparison will determine if it helps smaller models.
 
 ## Implementation Notes
 
 - **Dict-based layers**: `self.layers` uses `{"l0": ..., "l1": ...}` keys (not `[Block(...)]` or `{"0": ...}`). MLX's `tree_unflatten` converts string-digit keys back to lists, which breaks `MultiOptimizer`. The `"l"` prefix prevents this.
-- **MultiOptimizer filter**: `is_muon_param(path, weight)` routes 2D+ weights in `layers` (excluding `ve_gate`) to Muon, everything else to AdamW.
+- **MultiOptimizer filters**: 4 filter functions route params to groups 1-4; unmatched params fall through to group 5 (fallback). Order matters -- first match wins.
 - **Compiled step + grad_accum**: The compiled training step only works when `grad_accum_steps == 1`. With `grad_accum > 1`, the fallback is uncompiled (~15% slower) because intermediate micro-steps need explicit eval for accumulation.
-- **Step counter workaround**: `optimizer._state['step']` manipulation (Phase 2 init) is a private API workaround. If MLX adds a public setter, switch to it.
+- **Step counter workaround**: `optimizer._state['step']` manipulation (Phase 2 init) is a private API workaround. Must be set on all 5 sub-optimizers. If MLX adds a public setter, switch to it.
+- **Muon momentum**: Fixed at 0.95 (reference ramps 0.85->0.95 over 300 steps). Deliberate simplification for mx.compile compatibility.
+- **Weight decay**: Fixed at 0.2 (reference decays as `WD * (1-progress)`). Same mx.compile limitation.
 - **Session logging**: Update `internal/log/log_YYYY-MM-DD.md` every iteration with what was done, decisions made, and open questions.
 
 ## Experiment Workflow

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0
+
+- Per-param LR groups: expand MultiOptimizer from 2 to 5 groups matching baseline PyTorch config
+  - Group 1: Muon (matrix weights), Group 2: AdamW (embeddings), Group 3: AdamW (x0_lambdas, beta1=0.96),
+    Group 4: AdamW (resid_lambdas, 0.01x LR), Group 5: AdamW fallback (lm_head + ve_gate)
+- Add dmodel_scale = (n_embd / 768)^-0.5 to scale AdamW LRs by model width
+- Save training results to data/run_<timestamp>.json (orjson)
+- Save benchmark results to data/bench_<timestamp>.json (orjson)
+
 ## 0.4.0
 
 - Muon optimizer for 2D+ matrix weights via MultiOptimizer (Muon + AdamW)

@@ -16,7 +16,8 @@ from prepare import MAX_SEQ_LEN, Tokenizer, make_dataloader, get_token_bytes, EV
 from train import (
     GPT, build_model_config, _sliding_window_mask_cache, _norm_weight_cache,
     loss_fn, DEPTH, DEVICE_BATCH_SIZE, TOTAL_BATCH_SIZE,
-    MATRIX_LR, ADAM_BETAS, EMBEDDING_LR, WEIGHT_DECAY,
+    MATRIX_LR, ADAM_BETAS, X0_BETAS, EMBEDDING_LR, UNEMBEDDING_LR,
+    SCALAR_LR, WEIGHT_DECAY,
 )
 
 NUM_STEPS = 20
@@ -46,12 +47,26 @@ print()
 # Optimizer + dataloader
 # ---------------------------------------------------------------------------
 
+dmodel_scale = (config.n_embd / 768) ** -0.5
+
 def is_muon_param(path, weight):
     return 'layers' in path and weight.ndim >= 2 and 've_gate' not in path
+def is_embedding(path, weight):
+    return 'wte' in path or 'value_embeds' in path
+def is_x0_lambdas(path, weight):
+    return 'x0_lambdas' in path
+def is_resid_lambdas(path, weight):
+    return 'resid_lambdas' in path
 
 muon_opt = optim.Muon(learning_rate=MATRIX_LR, momentum=0.95, weight_decay=WEIGHT_DECAY)
-adam_opt = optim.AdamW(learning_rate=EMBEDDING_LR, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
-optimizer = optim.MultiOptimizer([muon_opt, adam_opt], [is_muon_param])
+embed_opt = optim.AdamW(learning_rate=EMBEDDING_LR * dmodel_scale, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
+x0_opt = optim.AdamW(learning_rate=SCALAR_LR * dmodel_scale, betas=list(X0_BETAS), eps=1e-10, weight_decay=0.0)
+resid_opt = optim.AdamW(learning_rate=SCALAR_LR * 0.01 * dmodel_scale, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
+fallback_opt = optim.AdamW(learning_rate=UNEMBEDDING_LR * dmodel_scale, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
+optimizer = optim.MultiOptimizer(
+    [muon_opt, embed_opt, x0_opt, resid_opt, fallback_opt],
+    [is_muon_param, is_embedding, is_x0_lambdas, is_resid_lambdas],
+)
 
 tokens_per_fwdbwd = DEVICE_BATCH_SIZE * MAX_SEQ_LEN
 grad_accum_steps = TOTAL_BATCH_SIZE // tokens_per_fwdbwd
@@ -140,10 +155,16 @@ print(f"{'tok/sec':12s}: {avg_tok:,}")
 print()
 print(f"=== Compiled Training (10 steps) ===")
 
-# Fresh optimizer for compiled path
+# Fresh 5-group optimizer for compiled path
 compiled_muon = optim.Muon(learning_rate=MATRIX_LR, momentum=0.95, weight_decay=WEIGHT_DECAY)
-compiled_adam = optim.AdamW(learning_rate=EMBEDDING_LR, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
-compiled_optimizer = optim.MultiOptimizer([compiled_muon, compiled_adam], [is_muon_param])
+compiled_embed = optim.AdamW(learning_rate=EMBEDDING_LR * dmodel_scale, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
+compiled_x0 = optim.AdamW(learning_rate=SCALAR_LR * dmodel_scale, betas=list(X0_BETAS), eps=1e-10, weight_decay=0.0)
+compiled_resid = optim.AdamW(learning_rate=SCALAR_LR * 0.01 * dmodel_scale, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
+compiled_fallback = optim.AdamW(learning_rate=UNEMBEDDING_LR * dmodel_scale, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
+compiled_optimizer = optim.MultiOptimizer(
+    [compiled_muon, compiled_embed, compiled_x0, compiled_resid, compiled_fallback],
+    [is_muon_param, is_embedding, is_x0_lambdas, is_resid_lambdas],
+)
 
 state = [model.state, compiled_optimizer.state]
 

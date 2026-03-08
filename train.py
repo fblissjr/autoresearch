@@ -5,6 +5,7 @@ Usage: uv run train.py
 """
 
 import gc
+import os
 import time
 from dataclasses import dataclass, asdict
 from functools import partial
@@ -12,6 +13,7 @@ from functools import partial
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
+import orjson
 from mlx.utils import tree_map, tree_flatten
 
 from prepare import MAX_SEQ_LEN, TIME_BUDGET, Tokenizer, make_dataloader, evaluate_bpb
@@ -273,6 +275,7 @@ MATRIX_LR = 0.04        # learning rate for matrix parameters (Muon)
 SCALAR_LR = 0.5         # learning rate for per-layer scalars (Adam)
 WEIGHT_DECAY = 0.2      # cautious weight decay for Muon
 ADAM_BETAS = (0.8, 0.95) # Adam beta1, beta2
+X0_BETAS = (0.96, 0.95)  # x0_lambdas use higher beta1 for stability
 WARMUP_RATIO = 0.0      # fraction of time budget for LR warmup
 WARMDOWN_RATIO = 0.5    # fraction of time budget for LR warmdown
 FINAL_LR_FRAC = 0.0     # final LR as fraction of initial
@@ -295,24 +298,6 @@ def build_model_config(depth, vocab_size):
         window_pattern=WINDOW_PATTERN,
     )
 
-
-# Schedules (all based on progress = training_time / TIME_BUDGET)
-
-def get_lr_multiplier(progress):
-    if progress < WARMUP_RATIO:
-        return progress / WARMUP_RATIO if WARMUP_RATIO > 0 else 1.0
-    elif progress < 1.0 - WARMDOWN_RATIO:
-        return 1.0
-    else:
-        cooldown = (1.0 - progress) / WARMDOWN_RATIO
-        return cooldown * 1.0 + (1 - cooldown) * FINAL_LR_FRAC
-
-def get_muon_momentum(step):
-    frac = min(step / 300, 1)
-    return (1 - frac) * 0.85 + frac * 0.95
-
-def get_weight_decay(progress):
-    return WEIGHT_DECAY * (1 - progress)
 
 # ---------------------------------------------------------------------------
 # Training step
@@ -362,23 +347,59 @@ if __name__ == "__main__":
     # Phase 1: Warmup (uncompiled) -- absorb compilation, measure step time
     # -----------------------------------------------------------------------
 
-    # Muon for 2D+ matrix weights in transformer layers (excluding small ve_gate)
-    # AdamW for everything else (embeddings, scalars, biases, 1D params)
+    # 5 optimizer groups matching baseline per-param LR tuning
+    dmodel_scale = (config.n_embd / 768) ** -0.5
+
     def is_muon_param(path, weight):
         return 'layers' in path and weight.ndim >= 2 and 've_gate' not in path
 
+    def is_embedding(path, weight):
+        return 'wte' in path or 'value_embeds' in path
+
+    def is_x0_lambdas(path, weight):
+        return 'x0_lambdas' in path
+
+    def is_resid_lambdas(path, weight):
+        return 'resid_lambdas' in path
+
+    # Group 1: Muon for 2D+ matrix weights in transformer layers
     muon_opt = optim.Muon(
         learning_rate=MATRIX_LR,
         momentum=0.95,
         weight_decay=WEIGHT_DECAY,
     )
-    adam_opt = optim.AdamW(
-        learning_rate=EMBEDDING_LR,
+    # Group 2: AdamW for embeddings (wte + value_embeds)
+    embed_opt = optim.AdamW(
+        learning_rate=EMBEDDING_LR * dmodel_scale,
         betas=list(ADAM_BETAS),
         eps=1e-10,
         weight_decay=0.0,
     )
-    optimizer = optim.MultiOptimizer([muon_opt, adam_opt], [is_muon_param])
+    # Group 3: AdamW for x0_lambdas (higher beta1)
+    x0_opt = optim.AdamW(
+        learning_rate=SCALAR_LR * dmodel_scale,
+        betas=list(X0_BETAS),
+        eps=1e-10,
+        weight_decay=0.0,
+    )
+    # Group 4: AdamW for resid_lambdas (lower LR)
+    resid_opt = optim.AdamW(
+        learning_rate=SCALAR_LR * 0.01 * dmodel_scale,
+        betas=list(ADAM_BETAS),
+        eps=1e-10,
+        weight_decay=0.0,
+    )
+    # Group 5 (fallback): AdamW for lm_head + ve_gate
+    fallback_opt = optim.AdamW(
+        learning_rate=UNEMBEDDING_LR * dmodel_scale,
+        betas=list(ADAM_BETAS),
+        eps=1e-10,
+        weight_decay=0.0,
+    )
+    optimizer = optim.MultiOptimizer(
+        [muon_opt, embed_opt, x0_opt, resid_opt, fallback_opt],
+        [is_muon_param, is_embedding, is_x0_lambdas, is_resid_lambdas],
+    )
 
     loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
 
@@ -466,25 +487,49 @@ if __name__ == "__main__":
         return optim.join_schedules(scheds, bounds)
 
     matrix_schedule = make_lr_schedule(MATRIX_LR)
-    embedding_schedule = make_lr_schedule(EMBEDDING_LR)
+    embed_schedule = make_lr_schedule(EMBEDDING_LR * dmodel_scale)
+    x0_schedule = make_lr_schedule(SCALAR_LR * dmodel_scale)
+    resid_schedule = make_lr_schedule(SCALAR_LR * 0.01 * dmodel_scale)
+    fallback_schedule = make_lr_schedule(UNEMBEDDING_LR * dmodel_scale)
 
-    # Create fresh MultiOptimizer with step-based schedules
+    # Create fresh MultiOptimizer with step-based schedules (same 5 groups)
     muon_opt = optim.Muon(
         learning_rate=matrix_schedule,
         momentum=0.95,
         weight_decay=WEIGHT_DECAY,
     )
-    adam_opt = optim.AdamW(
-        learning_rate=embedding_schedule,
+    embed_opt = optim.AdamW(
+        learning_rate=embed_schedule,
         betas=list(ADAM_BETAS),
         eps=1e-10,
         weight_decay=0.0,
     )
-    optimizer = optim.MultiOptimizer([muon_opt, adam_opt], [is_muon_param])
-    # Advance optimizer step counters past warmup steps so LR schedule is correct
-    # (private API workaround -- if MLX adds a public setter, switch to it)
-    muon_opt._state['step'] = mx.array(step, dtype=mx.uint64)
-    adam_opt._state['step'] = mx.array(step, dtype=mx.uint64)
+    x0_opt = optim.AdamW(
+        learning_rate=x0_schedule,
+        betas=list(X0_BETAS),
+        eps=1e-10,
+        weight_decay=0.0,
+    )
+    resid_opt = optim.AdamW(
+        learning_rate=resid_schedule,
+        betas=list(ADAM_BETAS),
+        eps=1e-10,
+        weight_decay=0.0,
+    )
+    fallback_opt = optim.AdamW(
+        learning_rate=fallback_schedule,
+        betas=list(ADAM_BETAS),
+        eps=1e-10,
+        weight_decay=0.0,
+    )
+    optimizer = optim.MultiOptimizer(
+        [muon_opt, embed_opt, x0_opt, resid_opt, fallback_opt],
+        [is_muon_param, is_embedding, is_x0_lambdas, is_resid_lambdas],
+    )
+    # Advance step counters past warmup so LR schedule aligns
+    all_opts = [muon_opt, embed_opt, x0_opt, resid_opt, fallback_opt]
+    for opt in all_opts:
+        opt._state['step'] = mx.array(step, dtype=mx.uint64)
     mx.eval(optimizer.state)
 
     # Build compiled training step
@@ -570,12 +615,41 @@ if __name__ == "__main__":
     peak_mem_bytes = mx.get_peak_memory()
     peak_mem_mb = peak_mem_bytes / 1024 / 1024
 
+    avg_tok_sec = int(total_tokens / total_training_time)
+
     print("---")
     print(f"val_bpb:          {val_bpb:.6f}")
     print(f"training_seconds: {total_training_time:.1f}")
     print(f"total_seconds:    {t_end - t_start:.1f}")
     print(f"peak_memory_mb:   {peak_mem_mb:.1f}")
     print(f"total_tokens_M:   {total_tokens / 1e6:.1f}")
+    print(f"avg_tok_sec:      {avg_tok_sec:,}")
     print(f"num_steps:        {step}")
     print(f"num_params_M:     {num_params / 1e6:.1f}")
     print(f"depth:            {DEPTH}")
+    print(f"dmodel_scale:     {dmodel_scale:.4f}")
+
+    # Save results to data/
+    run_data = {
+        "val_bpb": round(val_bpb, 6),
+        "training_seconds": round(total_training_time, 1),
+        "total_seconds": round(t_end - t_start, 1),
+        "peak_memory_mb": round(peak_mem_mb, 1),
+        "total_tokens": total_tokens,
+        "avg_tok_sec": avg_tok_sec,
+        "num_steps": step,
+        "num_params": num_params,
+        "depth": DEPTH,
+        "n_embd": config.n_embd,
+        "dmodel_scale": round(dmodel_scale, 4),
+        "batch_size": DEVICE_BATCH_SIZE,
+        "total_batch_size": TOTAL_BATCH_SIZE,
+        "optimizer_groups": 5,
+        "config": asdict(config),
+        "param_counts": param_counts,
+    }
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    out_path = os.path.join("data", f"run_{timestamp}.json")
+    with open(out_path, "wb") as f:
+        f.write(orjson.dumps(run_data, option=orjson.OPT_INDENT_2))
+    print(f"Results saved to {out_path}")

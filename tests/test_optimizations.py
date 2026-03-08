@@ -11,13 +11,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
-from mlx.utils import tree_map
 
-from prepare import MAX_SEQ_LEN, Tokenizer, make_dataloader, get_token_bytes, EVAL_TOKENS
+from prepare import MAX_SEQ_LEN, Tokenizer, make_dataloader, get_token_bytes
 from train import (
     GPT, build_model_config, loss_fn,
-    DEPTH, DEVICE_BATCH_SIZE, TOTAL_BATCH_SIZE,
-    MATRIX_LR, ADAM_BETAS, EMBEDDING_LR, WEIGHT_DECAY,
+    DEPTH, DEVICE_BATCH_SIZE,
+    MATRIX_LR, ADAM_BETAS, X0_BETAS, EMBEDDING_LR, UNEMBEDDING_LR,
+    SCALAR_LR, WEIGHT_DECAY,
 )
 
 
@@ -141,21 +141,46 @@ class TestLargerEvalBatch:
 # ---------------------------------------------------------------------------
 
 class TestCompiledTrainingStep:
-    """Verify compiled loss+grad produces valid gradients."""
+    """Verify compiled loss+grad produces valid gradients with 5-group MultiOptimizer."""
 
-    def test_compiled_step_with_state_tracking(self):
-        """mx.compile with inputs/outputs state tracking works for training."""
-        from functools import partial as fpartial
-        model, tokenizer = _make_model()
-        train_loader = make_dataloader(tokenizer, DEVICE_BATCH_SIZE, MAX_SEQ_LEN, "train")
+    def _make_5group_optimizer(self, config, use_schedule=False):
+        """Build 5-group MultiOptimizer matching train.py."""
+        dmodel_scale = (config.n_embd / 768) ** -0.5
 
-        optimizer = optim.AdamW(
-            learning_rate=MATRIX_LR,
-            betas=list(ADAM_BETAS),
-            eps=1e-10,
-            weight_decay=0.0,
+        def is_muon_param(path, weight):
+            return 'layers' in path and weight.ndim >= 2 and 've_gate' not in path
+        def is_embedding(path, weight):
+            return 'wte' in path or 'value_embeds' in path
+        def is_x0_lambdas(path, weight):
+            return 'x0_lambdas' in path
+        def is_resid_lambdas(path, weight):
+            return 'resid_lambdas' in path
+
+        if use_schedule:
+            matrix_lr = optim.join_schedules(
+                [optim.linear_schedule(0.0, MATRIX_LR, steps=5),
+                 optim.cosine_decay(MATRIX_LR, decay_steps=15)], [5])
+        else:
+            matrix_lr = MATRIX_LR
+
+        muon = optim.Muon(learning_rate=matrix_lr, momentum=0.95, weight_decay=WEIGHT_DECAY)
+        embed = optim.AdamW(learning_rate=EMBEDDING_LR * dmodel_scale, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
+        x0 = optim.AdamW(learning_rate=SCALAR_LR * dmodel_scale, betas=list(X0_BETAS), eps=1e-10, weight_decay=0.0)
+        resid = optim.AdamW(learning_rate=SCALAR_LR * 0.01 * dmodel_scale, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
+        fallback = optim.AdamW(learning_rate=UNEMBEDDING_LR * dmodel_scale, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
+        return optim.MultiOptimizer(
+            [muon, embed, x0, resid, fallback],
+            [is_muon_param, is_embedding, is_x0_lambdas, is_resid_lambdas],
         )
 
+    def test_compiled_step_with_state_tracking(self):
+        """mx.compile with inputs/outputs state tracking works for 5-group MultiOptimizer."""
+        from functools import partial as fpartial
+        model, tokenizer = _make_model()
+        config = build_model_config(DEPTH, tokenizer.get_vocab_size())
+        train_loader = make_dataloader(tokenizer, DEVICE_BATCH_SIZE, MAX_SEQ_LEN, "train")
+
+        optimizer = self._make_5group_optimizer(config)
         state = [model.state, optimizer.state]
 
         @fpartial(mx.compile, inputs=state, outputs=state)
@@ -172,24 +197,13 @@ class TestCompiledTrainingStep:
         assert loss.item() < 20, f"Loss too high for random init: {loss.item()}"
 
     def test_compiled_step_with_schedule_no_recompilation(self):
-        """Step-based LR schedule works with compiled training (no recompilation)."""
+        """Step-based LR schedule works with compiled 5-group MultiOptimizer."""
         from functools import partial as fpartial
         model, tokenizer = _make_model()
+        config = build_model_config(DEPTH, tokenizer.get_vocab_size())
         train_loader = make_dataloader(tokenizer, DEVICE_BATCH_SIZE, MAX_SEQ_LEN, "train")
 
-        # Use step-based schedule instead of time-based
-        schedule = optim.join_schedules(
-            [optim.linear_schedule(0.0, MATRIX_LR, steps=5),
-             optim.cosine_decay(MATRIX_LR, decay_steps=15)],
-            [5]
-        )
-        optimizer = optim.AdamW(
-            learning_rate=schedule,
-            betas=list(ADAM_BETAS),
-            eps=1e-10,
-            weight_decay=0.0,
-        )
-
+        optimizer = self._make_5group_optimizer(config, use_schedule=True)
         state = [model.state, optimizer.state]
 
         @fpartial(mx.compile, inputs=state, outputs=state)
@@ -205,25 +219,19 @@ class TestCompiledTrainingStep:
             mx.eval(loss)
             losses.append(loss.item())
 
-        # Should not diverge over 10 steps
         assert all(l < 100 for l in losses), f"Loss diverged with schedule: {losses}"
 
     def test_compiled_training_step_reduces_loss(self):
-        """A few compiled training steps should reduce loss."""
+        """A few training steps with 5-group MultiOptimizer should reduce loss."""
         model, tokenizer = _make_model()
+        config = build_model_config(DEPTH, tokenizer.get_vocab_size())
         train_loader = make_dataloader(tokenizer, DEVICE_BATCH_SIZE, MAX_SEQ_LEN, "train")
 
-        optimizer = optim.AdamW(
-            learning_rate=MATRIX_LR,
-            betas=list(ADAM_BETAS),
-            eps=1e-10,
-            weight_decay=0.0,
-        )
-
+        optimizer = self._make_5group_optimizer(config)
         loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
 
         losses = []
-        for step in range(5):
+        for _ in range(5):
             x, y, _ = next(train_loader)
             loss, grads = loss_and_grad_fn(model, x, y)
             optimizer.update(model, grads)
@@ -231,8 +239,6 @@ class TestCompiledTrainingStep:
             mx.eval(loss, model.parameters(), optimizer.state)
             losses.append(loss.item())
 
-        # Loss should generally decrease over 5 steps (allow some noise)
-        # At minimum, it shouldn't diverge
         assert losses[-1] < 100, f"Loss diverged: {losses}"
 
 
@@ -243,21 +249,37 @@ class TestCompiledTrainingStep:
 class TestMultiOptimizer:
     """Verify MultiOptimizer with Muon (matrix params) + AdamW (embeddings)."""
 
-    def test_multi_optimizer_runs_without_error(self):
-        """MultiOptimizer with dict-based layers doesn't crash."""
-        model, tokenizer = _make_model()
-        train_loader = make_dataloader(tokenizer, DEVICE_BATCH_SIZE, MAX_SEQ_LEN, "train")
+    def _make_5group_optimizer(self, config):
+        """Build the 5-group MultiOptimizer matching train.py."""
+        dmodel_scale = (config.n_embd / 768) ** -0.5
 
         def is_muon_param(path, weight):
             return 'layers' in path and weight.ndim >= 2 and 've_gate' not in path
+        def is_embedding(path, weight):
+            return 'wte' in path or 'value_embeds' in path
+        def is_x0_lambdas(path, weight):
+            return 'x0_lambdas' in path
+        def is_resid_lambdas(path, weight):
+            return 'resid_lambdas' in path
 
         muon = optim.Muon(learning_rate=MATRIX_LR, momentum=0.95, weight_decay=WEIGHT_DECAY)
-        adam = optim.AdamW(learning_rate=EMBEDDING_LR, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
-        optimizer = optim.MultiOptimizer([muon, adam], [is_muon_param])
+        embed = optim.AdamW(learning_rate=EMBEDDING_LR * dmodel_scale, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
+        x0 = optim.AdamW(learning_rate=SCALAR_LR * dmodel_scale, betas=list(X0_BETAS), eps=1e-10, weight_decay=0.0)
+        resid = optim.AdamW(learning_rate=SCALAR_LR * 0.01 * dmodel_scale, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
+        fallback = optim.AdamW(learning_rate=UNEMBEDDING_LR * dmodel_scale, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
+        filters = [is_muon_param, is_embedding, is_x0_lambdas, is_resid_lambdas]
+        return optim.MultiOptimizer([muon, embed, x0, resid, fallback], filters)
 
+    def test_multi_optimizer_runs_without_error(self):
+        """5-group MultiOptimizer with dict-based layers doesn't crash."""
+        model, tokenizer = _make_model()
+        config = build_model_config(DEPTH, tokenizer.get_vocab_size())
+        train_loader = make_dataloader(tokenizer, DEVICE_BATCH_SIZE, MAX_SEQ_LEN, "train")
+
+        optimizer = self._make_5group_optimizer(config)
         loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
 
-        for step in range(5):
+        for _ in range(5):
             x, y, _ = next(train_loader)
             loss, grads = loss_and_grad_fn(model, x, y)
             optimizer.update(model, grads)
@@ -266,13 +288,22 @@ class TestMultiOptimizer:
         assert loss.item() < 100, f"Loss diverged: {loss.item()}"
 
     def test_multi_optimizer_compiled(self):
-        """MultiOptimizer works with mx.compile and LR schedules."""
+        """5-group MultiOptimizer works with mx.compile and LR schedules."""
         from functools import partial as fpartial
         model, tokenizer = _make_model()
+        config = build_model_config(DEPTH, tokenizer.get_vocab_size())
         train_loader = make_dataloader(tokenizer, DEVICE_BATCH_SIZE, MAX_SEQ_LEN, "train")
+
+        dmodel_scale = (config.n_embd / 768) ** -0.5
 
         def is_muon_param(path, weight):
             return 'layers' in path and weight.ndim >= 2 and 've_gate' not in path
+        def is_embedding(path, weight):
+            return 'wte' in path or 'value_embeds' in path
+        def is_x0_lambdas(path, weight):
+            return 'x0_lambdas' in path
+        def is_resid_lambdas(path, weight):
+            return 'resid_lambdas' in path
 
         schedule = optim.join_schedules(
             [optim.linear_schedule(MATRIX_LR, MATRIX_LR, steps=5),
@@ -280,8 +311,12 @@ class TestMultiOptimizer:
             [5]
         )
         muon = optim.Muon(learning_rate=schedule, momentum=0.95, weight_decay=WEIGHT_DECAY)
-        adam = optim.AdamW(learning_rate=EMBEDDING_LR, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
-        optimizer = optim.MultiOptimizer([muon, adam], [is_muon_param])
+        embed = optim.AdamW(learning_rate=EMBEDDING_LR * dmodel_scale, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
+        x0 = optim.AdamW(learning_rate=SCALAR_LR * dmodel_scale, betas=list(X0_BETAS), eps=1e-10, weight_decay=0.0)
+        resid = optim.AdamW(learning_rate=SCALAR_LR * 0.01 * dmodel_scale, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
+        fallback = optim.AdamW(learning_rate=UNEMBEDDING_LR * dmodel_scale, betas=list(ADAM_BETAS), eps=1e-10, weight_decay=0.0)
+        filters = [is_muon_param, is_embedding, is_x0_lambdas, is_resid_lambdas]
+        optimizer = optim.MultiOptimizer([muon, embed, x0, resid, fallback], filters)
 
         state = [model.state, optimizer.state]
 
@@ -298,7 +333,7 @@ class TestMultiOptimizer:
             mx.eval(loss)
             losses.append(loss.item())
 
-        assert all(l < 100 for l in losses), f"Loss diverged with compiled MultiOptimizer: {losses}"
+        assert all(l < 100 for l in losses), f"Loss diverged with compiled 5-group MultiOptimizer: {losses}"
 
 
 if __name__ == "__main__":
