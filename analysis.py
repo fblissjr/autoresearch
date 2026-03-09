@@ -10,8 +10,10 @@ Usage: uv run analysis.py [--output-dir data/]
 """
 
 import argparse
+import glob
 import os
 
+import orjson
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
@@ -141,17 +143,68 @@ def plot_progress(df, output_path="progress.png"):
     print(f"Saved progress chart to {output_path}")
 
 
+def load_runs(data_dir="data"):
+    """Read all data/run_*.json files, return list of dicts sorted by timestamp."""
+    pattern = os.path.join(data_dir, "run_*.json")
+    runs = []
+    for path in sorted(glob.glob(pattern)):
+        with open(path, "rb") as f:
+            runs.append(orjson.loads(f.read()))
+    runs.sort(key=lambda r: r.get("timestamp", ""))
+    return runs
+
+
+def print_run_details(runs):
+    """Print detailed cross-run comparison from JSON files."""
+    if not runs:
+        print("No run_*.json files found in data/.")
+        return
+
+    header = f"{'Timestamp':>19s}  {'Dataset':>10s}  {'Depth':>5s}  {'val_bpb':>8s}  {'tok/sec':>8s}  {'Steps':>5s}  {'TrainMB':>7s}  {'EvalSec':>7s}  {'Compiled':>8s}  {'Batch':>5s}"
+    print(header)
+    print("-" * len(header))
+
+    for run in runs:
+        ts = run.get("timestamp", "?")
+        dataset = run.get("data", {}).get("dataset", "?")
+        depth = run.get("model", {}).get("depth", "?")
+        val_bpb = run.get("result", {}).get("val_bpb", 0)
+        t = run.get("training", {})
+        tok_sec = t.get("avg_tok_sec", 0)
+        steps = t.get("total_steps", 0)
+        train_mb = t.get("training_peak_mb", 0)
+        eval_sec = t.get("eval_seconds", "")
+        compiled = "yes" if t.get("compiled") else "no"
+        batch = t.get("batch_size", "?")
+
+        eval_str = f"{eval_sec:.1f}" if isinstance(eval_sec, (int, float)) else "-"
+        print(f"{ts:>19s}  {str(dataset):>10s}  {str(depth):>5s}  {val_bpb:8.6f}  {tok_sec:>8,}  {steps:5d}  {train_mb:7.0f}  {eval_str:>7s}  {compiled:>8s}  {str(batch):>5s}")
+
+    print()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze autoresearch experiment results")
     parser.add_argument("--results", default="results.tsv", help="Path to results.tsv")
     parser.add_argument("--output-dir", default="data", help="Directory for output files")
     args = parser.parse_args()
 
-    df = load_results(args.results)
+    # Detailed view from run_*.json files
+    runs = load_runs(args.output_dir)
+    if runs:
+        print("=== Detailed Run History (from run_*.json) ===\n")
+        print_run_details(runs)
 
-    print_summary(df)
-    print_stats(df)
-    print_top_hits(df)
+    # Summary from results.tsv
+    if os.path.exists(args.results):
+        df = load_results(args.results)
 
-    os.makedirs(args.output_dir, exist_ok=True)
-    plot_progress(df, output_path=os.path.join(args.output_dir, "progress.png"))
+        print("=== Experiment Summary (from results.tsv) ===\n")
+        print_summary(df)
+        print_stats(df)
+        print_top_hits(df)
+
+        os.makedirs(args.output_dir, exist_ok=True)
+        plot_progress(df, output_path=os.path.join(args.output_dir, "progress.png"))
+    else:
+        print(f"No {args.results} found -- skipping TSV summary.")

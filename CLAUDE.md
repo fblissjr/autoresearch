@@ -76,9 +76,17 @@ See `program.md` for the full autonomous loop. In short:
 1. Edit `train.py` with an idea
 2. Commit
 3. Run `uv run train.py > run.log 2>&1`
-4. Check: `grep "^val_bpb:\|^peak_memory_mb:" run.log` (pipe through `tr '\r' '\n'` for carriage returns)
+4. Check: `grep "^val_bpb:\|^peak_memory_mb:\|^avg_tok_sec:\|^num_steps:\|^eval_seconds:" run.log`
 5. If improved, keep. If not, revert.
 6. Log to `results.tsv` (tab-separated: commit, val_bpb, memory_gb, status, description)
+
+## Data Model
+
+Two tiers of experiment data:
+- **Agent feedback** (grep from stdout): val_bpb, peak_memory_mb, avg_tok_sec, num_steps, eval_seconds
+- **Agent log** (results.tsv): original 5-column format (commit, val_bpb, memory_gb, status, description)
+- **Archived detail** (data/run_*.json): full structured data with step timings, config, hardware info
+- **Human analysis** (`uv run analysis.py`): reads both run_*.json and results.tsv
 
 ## MLX Notes
 

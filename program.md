@@ -51,6 +51,7 @@ training_seconds: 300.1
 total_seconds:    325.9
 train_peak_mb:    12345.6
 peak_memory_mb:   14000.2
+eval_seconds:     22.5
 total_tokens_M:   499.6
 avg_tok_sec:      41,931
 num_steps:        953
@@ -62,7 +63,7 @@ dmodel_scale:     1.7321
 Note that the script is configured to always stop after 5 minutes, so depending on the computing platform of this computer the numbers might look different. You can extract the key metric from the log file:
 
 ```
-grep "^val_bpb:\|^peak_memory_mb:" run.log
+grep "^val_bpb:\|^peak_memory_mb:\|^avg_tok_sec:\|^num_steps:\|^eval_seconds:" run.log
 ```
 
 ## Logging results
@@ -105,7 +106,8 @@ LOOP FOREVER:
 2. Tune `train.py` with an experimental idea by directly hacking the code.
 3. git commit
 4. Run the experiment: `uv run train.py > run.log 2>&1` (redirect everything -- do NOT use tee or let output flood your context)
-5. Read out the results: `grep "^val_bpb:\|^peak_memory_mb:" run.log`
+5. Read out the results: `grep "^val_bpb:\|^peak_memory_mb:\|^avg_tok_sec:\|^num_steps:\|^eval_seconds:" run.log`
+   - val_bpb is the primary metric. But also consider: if avg_tok_sec dropped significantly, you may be getting fewer training steps in the budget, which hurts convergence. If num_steps is much lower than the baseline, the change may have made the model too large or slow. If eval_seconds is unusually high, something may be wrong with the model's forward pass.
 6. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
 7. Record the results in the tsv (NOTE: do not commit the results.tsv file, leave it untracked by git)
 8. If val_bpb improved (lower), you "advance" the branch, keeping the git commit

@@ -28,6 +28,10 @@ Custom GPT with value embeddings, RoPE, sliding window attention, tanh logit cap
 - 4 filter functions route params to groups 1-4; unmatched fall to group 5. Order matters -- first match wins.
 - Phase 2 swaps LR schedules via `opt._schedulers['learning_rate']` on existing instances. Preserves Adam momentum buffers and step counters.
 
+## Agent Feedback Loop
+
+The agent gets 5 metrics via grep: val_bpb (primary), peak_memory_mb, avg_tok_sec, num_steps, eval_seconds. It logs keep/discard decisions to results.tsv (5 columns, matches original repo format). Full structured data is archived in data/run_*.json for human analysis via `uv run analysis.py`.
+
 ## Known Deviations from PyTorch Reference
 
 - dmodel_scale applied to scalar LRs (reference doesn't)

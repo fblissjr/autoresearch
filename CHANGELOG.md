@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.1
+
+- Add eval_seconds timing to train.py output and run_*.json
+- Expand agent feedback: grep now captures avg_tok_sec, num_steps, eval_seconds alongside val_bpb and peak_memory_mb
+- Add throughput guidance to program.md for agent keep/discard decisions
+- Fix bench.py multi-dataset support: add configure_dataset() call, resolve stale MAX_SEQ_LEN/EVAL_TOKENS imports
+- Add run_*.json consolidation view to analysis.py (detailed cross-run comparison table)
+- Document two-tier data model in CLAUDE.md and AGENTS.md
+
 ## 0.6.0
 
 - Multi-dataset support: add `data_sources.py` with dataset registry and `configure_dataset()` function

@@ -12,13 +12,19 @@ import mlx.nn as nn
 import mlx.optimizers as optim
 from mlx.utils import tree_map
 
-from prepare import MAX_SEQ_LEN, Tokenizer, make_dataloader, get_token_bytes, EVAL_TOKENS
+import prepare
+from prepare import Tokenizer, make_dataloader, get_token_bytes
+from data_sources import configure_dataset
 from train import (
     GPT, build_model_config, _sliding_window_mask_cache, _norm_weight_cache,
-    loss_fn, DEPTH, DEVICE_BATCH_SIZE, TOTAL_BATCH_SIZE,
+    loss_fn, DEPTH, DEVICE_BATCH_SIZE, TOTAL_BATCH_SIZE, DATASET,
     MATRIX_LR, ADAM_BETAS, X0_BETAS, EMBEDDING_LR, UNEMBEDDING_LR,
     SCALAR_LR, WEIGHT_DECAY,
 )
+
+configure_dataset(DATASET)
+MAX_SEQ_LEN = prepare.MAX_SEQ_LEN
+EVAL_TOKENS = prepare.EVAL_TOKENS
 
 NUM_STEPS = 20
 WARMUP_STEPS = 5

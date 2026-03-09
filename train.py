@@ -599,7 +599,9 @@ if __name__ == "__main__":
 
     # Final evaluation (compiled model, batch=32 to avoid memory surge)
     compiled_model = mx.compile(model)
+    t_eval_start = time.time()
     val_bpb = evaluate_bpb(compiled_model, tokenizer, EVAL_BATCH_SIZE)
+    eval_seconds = time.time() - t_eval_start
 
     # Final summary
     t_end = time.time()
@@ -614,6 +616,7 @@ if __name__ == "__main__":
     print(f"total_seconds:    {t_end - t_start:.1f}")
     print(f"train_peak_mb:    {training_peak_mb:.1f}")
     print(f"peak_memory_mb:   {peak_mem_mb:.1f}")
+    print(f"eval_seconds:     {eval_seconds:.1f}")
     print(f"total_tokens_M:   {total_tokens / 1e6:.1f}")
     print(f"avg_tok_sec:      {avg_tok_sec:,}")
     print(f"num_steps:        {step}")
@@ -643,6 +646,7 @@ if __name__ == "__main__":
             "avg_tok_sec": avg_tok_sec,
             "training_peak_mb": round(training_peak_mb, 1),
             "peak_memory_mb": round(peak_mem_mb, 1),
+            "eval_seconds": round(eval_seconds, 1),
             "optimizer_groups": 5,
             "compiled": grad_accum_steps == 1,
             "batch_size": DEVICE_BATCH_SIZE,
