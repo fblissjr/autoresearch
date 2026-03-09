@@ -17,3 +17,6 @@ dev/
 coderef/
 
 # Data outputs (contents managed by data/.gitignore)
+
+# Results file
+results.tsv
