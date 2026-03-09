@@ -74,7 +74,7 @@ The agent gets 5 metrics via grep: val_bpb (primary), peak_memory_mb, avg_tok_se
 | v0.5.2 | 8 | 1.886 | 193 | 42K | 49GB |
 | v0.5.0 | 8 | 1.900 | 154 | 33K | 63GB |
 | v0.3.0 | 8 | ~2.28 | ~189 | ~46K | ~53GB |
-| v0.6.0 | 4 | TBD | TBD | TBD | TBD |
+| v0.6.1 | 4 | 1.859 | 641 | 140K | 10.6GB |
 
 Reference: [trevin-creator/autoresearch-mlx](https://github.com/trevin-creator/autoresearch-mlx) achieves val_bpb=1.295 with DEPTH=4, flat AdamW.
 

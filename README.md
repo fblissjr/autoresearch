@@ -71,21 +71,19 @@ data/           - output files (charts, analysis artifacts)
 internal/log/   - session-by-session development notes
 ```
 
-## Current results (v0.5.2)
+## Current results (v0.6.1)
 
-Tested on M2 Ultra, 192GB unified memory. 5-minute training budget, 50M parameter GPT with value embeddings.
+Tested on M2 Ultra, 192GB unified memory. 5-minute training budget, 11.5M parameter GPT with value embeddings.
 
 | Metric | Value |
 |--------|-------|
-| val_bpb | 1.886 |
-| Training steps | 193 |
-| Avg throughput | 41,931 tok/sec |
-| Training peak memory | 49.4 GB |
-| Total time (train + eval) | 702.5s |
+| val_bpb | 1.859 |
+| Training steps | 641 |
+| Avg throughput | 139,999 tok/sec |
+| Peak memory | 10.6 GB |
+| Total time (train + eval) | 350.7s |
 
-5-group MultiOptimizer (Muon for matrix weights, AdamW for embeddings/scalars/head), compiled training via `mx.compile`, 20 data shards for diversity.
-
-v0.6.0 resets the baseline to DEPTH=4 (from 8) for more training steps in the 5-minute budget. New baseline results pending.
+DEPTH=4, 5-group MultiOptimizer (Muon for matrix weights, AdamW for embeddings/scalars/head), uncompiled training (grad_accum=2), 20 data shards.
 
 ## Documentation
 
