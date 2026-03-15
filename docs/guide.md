@@ -95,6 +95,7 @@ Tags must be unique -- the agent will refuse to reuse an existing branch. This l
 | `/experiment:data <tag> [dataset]` | Launch autonomous data experiment loop (edits prepare.py + data_sources.py) |
 | `/experiment:run [description]` | Run a single experiment cycle (commit, train, extract, log) |
 | `/experiment:compare [count]` | Compare recent training runs |
+| `/experiment:review` | Pre-flight check on train.py changes before a run |
 
 ### Interactive mode (human-in-the-loop)
 

@@ -157,6 +157,7 @@ ar -p "/experiment:data mar15-data"
 |-------|-------------|
 | `/experiment:run` | Single experiment cycle (commit, train, extract, log) |
 | `/experiment:compare [N]` | Compare recent training runs |
+| `/experiment:review` | Pre-flight check on train.py changes |
 
 See [docs/guide.md](docs/guide.md) for full details on permissions, safety, and tuning for smaller machines.
 
@@ -169,7 +170,7 @@ data_sources.py       - dataset registry and configuration (data program edits)
 log_utils.py          - structured output, diagnostics, logging
 program.md            - model experiment agent instructions
 program_data.md       - data experiment agent instructions
-experiment-plugin/    - Claude Code plugin (skills: model, data, run, compare; agent: experiment-reviewer)
+experiment-plugin/    - Claude Code plugin (skills: model, data, run, compare, review; agent: experiment-reviewer)
 bench.py              - performance profiling (compiled vs uncompiled)
 analysis.py           - experiment results analysis (reads run_*.json + results.tsv)
 docs/guide.md         - usage guide for all modes

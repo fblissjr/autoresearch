@@ -37,6 +37,7 @@ experiment-plugin/    -- Claude Code plugin: experiment skills and agents
   skills/data/        -- /experiment:data <tag> [dataset]
   skills/run/         -- /experiment:run [description]
   skills/compare/     -- /experiment:compare [count]
+  skills/review/      -- /experiment:review (pre-flight check)
   agents/             -- experiment-reviewer pre-flight agent
 tests/                -- Test suite
 data/                 -- Run archives and output (gitignored contents, tracked via .gitkeep)
@@ -63,6 +64,7 @@ Skills and agents live **only** in `experiment-plugin/` -- do not create `.claud
 | `/experiment:data` | `/experiment:data mar15-data [climbmix]` | Launch data experiment loop (reads program_data.md) |
 | `/experiment:run` | `/experiment:run` | Single experiment cycle (commit, train, extract, log) |
 | `/experiment:compare` | `/experiment:compare [5]` | Compare recent training runs |
+| `/experiment:review` | `/experiment:review` | Pre-flight check on train.py changes |
 
 The plugin also includes the `experiment-reviewer` agent for pre-flight checks on train.py changes.
 
@@ -123,6 +125,9 @@ Key fields in `last_run.json`: `result.val_bpb`, `training.peak_memory_mb`, `tra
 - Project dir env var is `CLAUDE_PROJECT_DIR` (not `PROJECT_DIR`)
 - PreToolUse hooks that exit non-zero block the tool call; stderr is shown as the error message
 - Prefer pure shell hooks over python3 subprocesses (~50ms startup overhead per call)
+- **Active hooks** (in `settings.local.json`):
+  - PreToolUse: blocks edits that touch `evaluate_bpb` in prepare.py (ground truth is locked)
+  - PostToolUse: runs test suite when train.py or prepare.py is edited
 
 ## Git and Privacy
 

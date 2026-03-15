@@ -8,6 +8,9 @@
   - `/experiment:run` -- single experiment cycle (migrated from `.claude/skills/run-experiment/`)
   - `/experiment:compare [count]` -- compare training runs (migrated from `.claude/skills/compare-runs/`)
   - `experiment-reviewer` agent moved into plugin
+- Add `/experiment:review` skill for pre-flight checks before training runs
+- Add PreToolUse hook to block edits touching `evaluate_bpb` in prepare.py
+- Expand PostToolUse test hook to also trigger on prepare.py edits
 - Remove `.claude/skills/` and `.claude/agents/` (consolidated into plugin)
 - Update README, CLAUDE.md, docs/guide.md, program.md, program_data.md with new skill syntax
 - Load plugin with `claude --plugin-dir ./experiment-plugin`
