@@ -56,6 +56,21 @@ Infrastructure improvements to throughput, hardware utilization, or developer to
 
 Both experiment programs (model and data) are designed to run as autonomous loops inside Claude Code. Two modes are supported.
 
+### Run tags
+
+A **run tag** is just a label that becomes the git branch name for an experiment session. It can be anything -- the agent creates a branch like `autoresearch/<tag>` or `autoresearch-data/<tag>` and runs all experiments there.
+
+Recommended convention: `<date>-<focus>` or just `<date>`. Examples:
+
+| Program | Tag | Branch created |
+|---------|-----|----------------|
+| Model | `mar15` | `autoresearch/mar15` |
+| Model | `mar15-muon-lr` | `autoresearch/mar15-muon-lr` |
+| Data | `mar15-data` | `autoresearch-data/mar15-data` |
+| Data | `mar15-dedup` | `autoresearch-data/mar15-dedup` |
+
+Tags must be unique -- the agent will refuse to reuse an existing branch. This lets you run multiple sessions and tell them apart in `git log`.
+
 ### Interactive mode (human-in-the-loop)
 
 Start Claude Code normally and reference the program file. The agent will ask for setup confirmation and permission for each tool call.
