@@ -697,4 +697,4 @@ if __name__ == "__main__":
         },
         "step_timings": format_step_timings(step_timings),
     }
-    save_json("run", run_data)
+    save_json("run", run_data, write_latest=True)

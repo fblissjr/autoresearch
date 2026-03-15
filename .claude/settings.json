@@ -44,7 +44,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -c '\nimport sys, json, os\ntry:\n    data = json.load(sys.stdin)\n    fp = data.get(\"tool_input\", {}).get(\"file_path\", \"\")\nexcept Exception:\n    sys.exit(0)\npd = os.environ.get(\"CLAUDE_PROJECT_DIR\", \"\") or os.getcwd()\nif not fp or not pd:\n    sys.exit(0)\nrf = os.path.realpath(fp)\nrd = os.path.realpath(pd)\nif rf == rd or rf.startswith(rd + \"/\"):\n    sys.exit(0)\nprint(\"BLOCKED: file operation outside project: \" + fp, file=sys.stderr)\nsys.exit(2)\n'"
+            "command": "FP=$(cat | sed -n 's/.*\"file_path\" *: *\"\\([^\"]*\\)\".*/\\1/p' | head -1); [ -z \"$FP\" ] && exit 2; RD=$(realpath \"${CLAUDE_PROJECT_DIR:-.}\" 2>/dev/null); RF=$(realpath \"$FP\" 2>/dev/null || echo \"$(realpath \"$(dirname \"$FP\")\" 2>/dev/null || dirname \"$FP\")/$(basename \"$FP\")\"); case \"$RF\" in \"$RD\"/*|\"$RD\") exit 0 ;; *) echo \"BLOCKED: file operation outside project: $FP\" >&2; exit 2 ;; esac"
           }
         ]
       }

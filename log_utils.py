@@ -93,12 +93,11 @@ def hardware_info():
     }
 
 
-def save_json(prefix, data):
+def save_json(prefix, data, *, write_latest=False):
     """Write data to data/<prefix>_<timestamp>.json.
 
-    For training runs (prefix="run"), also writes data/last_run.json as a
-    stable path for agent metric extraction. Bench runs don't write
-    last_run.json to avoid overwriting training results.
+    If write_latest=True, also writes data/last_run.json as a stable path
+    for agent metric extraction.
 
     Returns the timestamped output path.
     """
@@ -107,8 +106,7 @@ def save_json(prefix, data):
     payload = orjson.dumps(data, option=orjson.OPT_INDENT_2)
     with open(out_path, "wb") as f:
         f.write(payload)
-    # Stable path for machine consumers (agents, scripts) -- training runs only
-    if prefix == "run":
+    if write_latest:
         last_run_path = os.path.join("data", "last_run.json")
         with open(last_run_path, "wb") as f:
             f.write(payload)
