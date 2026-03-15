@@ -6,7 +6,7 @@ An AI agent autonomously experiments with model architecture and data quality to
 
 ## Quick start
 
-**Requirements:** Apple Silicon Mac, Python 3.10+, [uv](https://docs.astral.sh/uv/).
+**Requirements:** Apple Silicon Mac, Python 3.12+, [uv](https://docs.astral.sh/uv/).
 
 ```bash
 # 1. Install dependencies
