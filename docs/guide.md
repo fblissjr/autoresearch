@@ -96,17 +96,25 @@ claude -p "Read program_data.md and follow the experiment loop instructions. Run
 
 The committed `.claude/settings.json` allows:
 - File operations: Read, Edit, Write (for editing experiment files and logging)
-- `uv run` (training, data prep, tests)
+- Specific scripts only: `uv run train.py`, `uv run prepare.py`, `uv run bench.py`, `uv run analysis.py`, `uv run python tests/*`
 - Git operations: add, commit, checkout, branch, reset, log, diff, status (for the experiment loop)
-- Shell utilities: grep, tail, head, tr, ls, cat, pgrep, pkill, printf (for result extraction and process management)
+- Shell utilities: grep, tail, head, tr, ls, cat, pgrep, printf (for result extraction)
+- Process management: `pkill -f train.py`, `pkill -f prepare.py` (for killing hung runs only)
 
-**Explicitly denied**: `git push` -- the agent never pushes to remote. All work stays on local experiment branches.
+**Explicitly denied**:
+- `git push` -- the agent never pushes to remote
+- `uv run python -c` -- prevents arbitrary Python execution
+- `uv run --script` -- prevents running arbitrary scripts
+- General `pkill` -- only training processes can be killed
 
 ### Safety notes
 
 - The agent works on a dedicated branch (`autoresearch/<tag>` or `autoresearch-data/<tag>`). Master is never modified.
 - `git reset --hard` is allowed because the experiment loop uses it to discard failed experiments on the experiment branch. This is expected and safe.
 - The agent commits frequently (one commit per experiment). If something goes wrong, `git log` and `git reset` can recover any state.
+- `uv run` is scoped to known scripts -- the agent cannot run `uv run python -c "..."` or arbitrary Python files. This prevents accidental code execution outside the experiment loop.
+- `pkill` is scoped to training processes only -- the agent cannot kill unrelated processes.
+- `Read`/`Write`/`Edit` have no path restrictions (Claude Code limitation). The agent could theoretically read or write files outside the repo, but git operations are repo-scoped so nothing outside gets committed.
 - To add personal overrides without affecting the project, use `.claude/settings.local.json` (gitignored).
 
 ## Manual operations

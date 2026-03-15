@@ -4,7 +4,12 @@
       "Read",
       "Edit",
       "Write",
-      "Bash(uv run:*)",
+      "Bash(uv run train.py*)",
+      "Bash(uv run prepare.py*)",
+      "Bash(uv run bench.py*)",
+      "Bash(uv run analysis.py*)",
+      "Bash(uv run python tests/*)",
+      "Bash(uv sync*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git checkout:*)",
@@ -22,11 +27,14 @@
       "Bash(ls:*)",
       "Bash(cat:*)",
       "Bash(pgrep:*)",
-      "Bash(pkill:*)",
+      "Bash(pkill -f train.py*)",
+      "Bash(pkill -f prepare.py*)",
       "Bash(printf:*)"
     ],
     "deny": [
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(uv run python -c:*)",
+      "Bash(uv run --script:*)"
     ]
   }
 }
