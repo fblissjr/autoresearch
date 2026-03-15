@@ -12,7 +12,7 @@ Edit `train.py` to improve model architecture, optimizer, hyperparameters, or tr
 1. Create branch `autoresearch/<tag>`
 2. Edit `train.py` with an idea
 3. Commit, run `uv run train.py > run.log 2>&1`
-4. Check `grep "^val_bpb:\|^peak_memory_mb:\|^avg_tok_sec:\|^num_steps:\|^eval_seconds:" run.log`
+4. Read results from `data/last_run.json`
 5. Keep or discard based on val_bpb + throughput
 
 **Technical reference**: [AGENTS.md](../AGENTS.md) -- optimizer routing, MLX gotchas, compiled training, accumulated findings.
@@ -28,7 +28,7 @@ Edit `prepare.py` and `data_sources.py` to improve data quality, filtering, orde
 2. Edit `prepare.py` / `data_sources.py` with a data idea
 3. If pipeline changed structurally: run `uv run prepare.py --dataset <name>`
 4. Commit, run `uv run train.py > run.log 2>&1`
-5. Keep or discard based on val_bpb + throughput
+5. Read results from `data/last_run.json`, keep or discard based on val_bpb + throughput
 
 **Backlog**: [internal/data-investigations.md](../internal/data-investigations.md) -- quality analysis, experiment ideas.
 
@@ -98,7 +98,7 @@ The committed `.claude/settings.json` allows:
 - File operations: Read, Edit, Write (for editing experiment files and logging)
 - Specific scripts only: `uv run train.py`, `uv run prepare.py`, `uv run bench.py`, `uv run analysis.py`, `uv run python tests/*`
 - Git operations: add, commit, checkout, branch, reset, log, diff, status (for the experiment loop)
-- Shell utilities: grep, tail, head, tr, ls, cat, pgrep, printf (for result extraction)
+- Shell utilities: grep, tail, head, tr, ls, cat, pgrep, printf (for crash diagnostics)
 - Process management: `pkill -f train.py`, `pkill -f prepare.py` (for killing hung runs only)
 
 **Explicitly denied**:
@@ -109,12 +109,12 @@ The committed `.claude/settings.json` allows:
 
 ### Safety notes
 
+- **File path enforcement**: A PreToolUse hook (inlined in `settings.json`) blocks all Read/Edit/Write operations targeting files outside the project directory. Reads the tool input from stdin (Claude Code's hook JSON API), resolves paths via `os.path.realpath` to catch traversal (`../../.ssh/id_rsa`) and prefix-spoofing (`autoresearch-mlx-evil/`). Permissive on parse failure to avoid blocking legitimate operations. Test script at `.claude/hooks/check_file_path.py`.
 - The agent works on a dedicated branch (`autoresearch/<tag>` or `autoresearch-data/<tag>`). Master is never modified.
 - `git reset --hard` is allowed because the experiment loop uses it to discard failed experiments on the experiment branch. This is expected and safe.
 - The agent commits frequently (one commit per experiment). If something goes wrong, `git log` and `git reset` can recover any state.
 - `uv run` is scoped to known scripts -- the agent cannot run `uv run python -c "..."` or arbitrary Python files. This prevents accidental code execution outside the experiment loop.
 - `pkill` is scoped to training processes only -- the agent cannot kill unrelated processes.
-- `Read`/`Write`/`Edit` have no path restrictions (Claude Code limitation). The agent could theoretically read or write files outside the repo, but git operations are repo-scoped so nothing outside gets committed.
 - To add personal overrides without affecting the project, use `.claude/settings.local.json` (gitignored).
 
 ## Manual operations

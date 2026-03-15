@@ -36,5 +36,18 @@
       "Bash(uv run python -c:*)",
       "Bash(uv run --script:*)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c '\nimport sys, json, os\ntry:\n    data = json.load(sys.stdin)\n    fp = data.get(\"tool_input\", {}).get(\"file_path\", \"\")\nexcept Exception:\n    sys.exit(0)\npd = os.environ.get(\"CLAUDE_PROJECT_DIR\", \"\") or os.getcwd()\nif not fp or not pd:\n    sys.exit(0)\nrf = os.path.realpath(fp)\nrd = os.path.realpath(pd)\nif rf == rd or rf.startswith(rd + \"/\"):\n    sys.exit(0)\nprint(\"BLOCKED: file operation outside project: \" + fp, file=sys.stderr)\nsys.exit(2)\n'"
+          }
+        ]
+      }
+    ]
   }
 }
