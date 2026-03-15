@@ -13,7 +13,7 @@ The baseline autoresearch approach is algorithm-driven: optimize the model archi
 - <0.2% low alpha ratio, <1.3% repetitive, <0.2% all-caps heavy
 - No URL-heavy spam detected in 5K sample
 
-**Data volume finding**: 12.5x surplus. We have ~126M tokens in 2 training shards but only consume ~10M per 5-min run (epoch=1). This means:
+**Data volume finding**: 12.5x surplus per shard. With 20 training shards (~1.26B tokens total) we consume only ~10M per 5-min run (epoch=1). This means:
 - Filtering is free (no data starvation risk)
 - But the data is already clean, so simple heuristic filtering won't yield much
 - The val shard is from the same distribution, so training/eval distribution mismatch isn't an issue
@@ -25,10 +25,11 @@ The baseline autoresearch approach is algorithm-driven: optimize the model archi
 ## Backlog
 
 ### 2. Download more shards (data diversity)
-**Hypothesis**: We only have 2 training shards of 6,542 available. More shards = more document diversity per training run. Even though we only use ~8% of data per run, the 8% we see is drawn from the same 2 shards every time.
-**Approach**: `uv run prepare.py --num-shards 20` (or more). Measure if val_bpb improves with same training config but more diverse data.
-**Considerations**: Download time, cache disk space. Each shard is ~60MB. 20 shards = ~1.2GB.
-**Priority**: High -- cheapest experiment, zero code changes.
+**Status**: Partially done (20 shards since v0.5.2, up from 3)
+**Hypothesis**: More shards = more document diversity per training run. We currently use 20 of 6,542 available shards. Further increases (50, 100) may still help.
+**Approach**: Adjust `NUM_SHARDS` in prepare.py. Measure if val_bpb improves with same training config but more diverse data.
+**Considerations**: Download time, cache disk space. Each shard is ~60MB. 100 shards = ~6GB.
+**Priority**: High -- cheapest experiment, zero code changes (just change `NUM_SHARDS`).
 
 ### 3. Curriculum learning (data ordering)
 **Status**: Unblocked by data experiment program

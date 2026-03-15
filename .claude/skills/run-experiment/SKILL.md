@@ -49,12 +49,12 @@ Read the most recent `data/run_*.json` file (sorted by timestamp) and compare `r
 
 ### 5. Log to results.tsv
 
-Append a row to `results.tsv` (tab-separated):
+Append a row to `results.tsv` (tab-separated, 6 columns):
 ```
-<commit-hash-7char>\t<val_bpb>\t<peak_memory_gb>\t<keep|discard|crash>\t<description>
+<commit-hash-7char>\t<val_bpb>\t<peak_memory_gb>\t<avg_tok_sec>\t<keep|discard|crash>\t<description>
 ```
 
-- Use `0.000000` / `0.0` / `crash` for crashed runs
+- Use `0.000000` / `0.0` / `0` / `crash` for crashed runs
 - Round peak_memory to 0.1f GB (divide MB by 1024)
 
 ### 6. Keep or revert
