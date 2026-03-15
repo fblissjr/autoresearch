@@ -3,7 +3,7 @@ name = "autoresearch"
 version = "0.6.0"
 description = "MLX port of karpathy's autoresearch"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "matplotlib>=3.10.8",
     "mlx>=0.24.0",
