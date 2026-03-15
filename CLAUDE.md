@@ -90,6 +90,14 @@ Key fields in `last_run.json`: `result.val_bpb`, `training.peak_memory_mb`, `tra
 - New modules: avoid names that conflict with popular packages (e.g., don't use "datasets")
 - When using module globals as function default params, use `None` + runtime resolve (defaults bind at definition time)
 - `data_sources.configure_dataset()` updates prepare.py module globals via `prepare.DATA_DIR = ...`; functions that read globals in their body pick up changes correctly
+- `save_json(prefix, data, write_latest=False)`: only training runs pass `write_latest=True` to update `data/last_run.json`
+
+## Claude Code Hooks
+
+- Hook input comes via **stdin as JSON** (not env vars). Fields: `tool_input`, `tool_name`, `hook_event_name`, etc.
+- Project dir env var is `CLAUDE_PROJECT_DIR` (not `PROJECT_DIR`)
+- PreToolUse hooks that exit non-zero block the tool call; stderr is shown as the error message
+- Prefer pure shell hooks over python3 subprocesses (~50ms startup overhead per call)
 
 ## Git and Privacy
 
@@ -97,6 +105,7 @@ Key fields in `last_run.json`: `result.val_bpb`, `training.peak_memory_mb`, `tra
 - `internal/log/` is committed -- open research repo
 - `data/` tracked via `.gitkeep`, contents gitignored
 - `run.log` and `results.tsv` are gitignored
+- A PreToolUse hook in `.claude/settings.json` blocks file operations outside the project directory. If you need to read external files (e.g., cached data), use Bash instead of Read.
 - Never include absolute paths, usernames, or system-specific details in committed files
 - Use neutral language when referencing other implementations (not "competing", "rival", etc.)
 
