@@ -2,6 +2,8 @@
 
 This is an experiment to have the LLM improve training data quality and pipeline.
 
+**Launch this loop**: `/experiment:data <tag> [dataset]` (requires `--plugin-dir ./experiment-plugin`)
+
 ## Setup
 
 To set up a new data experiment, work with the user to:

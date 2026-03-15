@@ -1,8 +1,8 @@
 ---
-name: compare-runs
+name: compare
 description: Compare training runs from data/run_*.json files
+argument-hint: "[count]"
 disable-model-invocation: true
-args: "[count]"
 ---
 
 # Compare Runs

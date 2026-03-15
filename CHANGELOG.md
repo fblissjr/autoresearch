@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.2
+
+- Restructure experiment skills as `experiment-plugin/` Claude Code plugin
+  - `/experiment:model <tag> [dataset]` -- launch model experiment loop
+  - `/experiment:data <tag> [dataset]` -- launch data experiment loop
+  - `/experiment:run` -- single experiment cycle (migrated from `.claude/skills/run-experiment/`)
+  - `/experiment:compare [count]` -- compare training runs (migrated from `.claude/skills/compare-runs/`)
+  - `experiment-reviewer` agent moved into plugin
+- Remove `.claude/skills/` and `.claude/agents/` (consolidated into plugin)
+- Update README, CLAUDE.md, docs/guide.md, program.md, program_data.md with new skill syntax
+- Load plugin with `claude --plugin-dir ./experiment-plugin`
+
 ## 0.7.1
 
 - Add `data/last_run.json` as structured machine interface for experiment results

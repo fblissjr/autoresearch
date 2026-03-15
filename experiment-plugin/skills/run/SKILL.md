@@ -1,6 +1,7 @@
 ---
-name: run-experiment
+name: run
 description: Run a 5-minute training experiment, capture results, and log outcomes
+argument-hint: "[description]"
 disable-model-invocation: true
 ---
 

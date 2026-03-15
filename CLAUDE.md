@@ -23,23 +23,46 @@ Autonomous ML research framework: trains GPT models using MLX on Apple Silicon. 
 ## Project Structure
 
 ```
-train.py          -- Model + training loop (model program edits this)
-prepare.py        -- Data prep, tokenizer, dataloader, evaluate_bpb (data program edits this)
-data_sources.py   -- Dataset registry and configuration (data program edits this)
-log_utils.py      -- Structured JSON output, diagnostics, logging
-program.md        -- Model experiment autonomous loop
-program_data.md   -- Data experiment autonomous loop
-bench.py          -- Performance profiling
-analysis.py       -- Experiment results analysis
-docs/guide.md     -- Detailed usage guide for all modes
-tests/            -- Test suite
-data/             -- Run archives and output (gitignored contents, tracked via .gitkeep)
-  last_run.json   -- Stable path: most recent run's structured results
-  run_*.json      -- Timestamped archive of every run
-  bench_*.json    -- Benchmark archives
-internal/         -- Research notes and session logs (committed)
-  log/            -- Session logs (log_YYYY-MM-DD.md)
+train.py              -- Model + training loop (model program edits this)
+prepare.py            -- Data prep, tokenizer, dataloader, evaluate_bpb (data program edits this)
+data_sources.py       -- Dataset registry and configuration (data program edits this)
+log_utils.py          -- Structured JSON output, diagnostics, logging
+program.md            -- Model experiment autonomous loop
+program_data.md       -- Data experiment autonomous loop
+bench.py              -- Performance profiling
+analysis.py           -- Experiment results analysis
+docs/guide.md         -- Detailed usage guide for all modes
+experiment-plugin/    -- Claude Code plugin: experiment skills and agents
+  skills/model/       -- /experiment:model <tag> [dataset]
+  skills/data/        -- /experiment:data <tag> [dataset]
+  skills/run/         -- /experiment:run [description]
+  skills/compare/     -- /experiment:compare [count]
+  agents/             -- experiment-reviewer pre-flight agent
+tests/                -- Test suite
+data/                 -- Run archives and output (gitignored contents, tracked via .gitkeep)
+  last_run.json       -- Stable path: most recent run's structured results
+  run_*.json          -- Timestamped archive of every run
+  bench_*.json        -- Benchmark archives
+internal/             -- Research notes and session logs (committed)
+  log/                -- Session logs (log_YYYY-MM-DD.md)
 ```
+
+## Experiment Plugin
+
+The `experiment-plugin/` directory is a Claude Code plugin providing namespaced skills and agents. Load it with:
+
+```bash
+claude --plugin-dir ./experiment-plugin
+```
+
+| Skill | Usage | Description |
+|-------|-------|-------------|
+| `/experiment:model` | `/experiment:model mar15 [climbmix]` | Launch model experiment loop (reads program.md) |
+| `/experiment:data` | `/experiment:data mar15-data [climbmix]` | Launch data experiment loop (reads program_data.md) |
+| `/experiment:run` | `/experiment:run` | Single experiment cycle (commit, train, extract, log) |
+| `/experiment:compare` | `/experiment:compare [5]` | Compare recent training runs |
+
+The plugin also includes the `experiment-reviewer` agent for pre-flight checks on train.py changes.
 
 ## Program Architecture
 
@@ -125,7 +148,7 @@ If the log file for today doesn't exist, create it with the standard header form
 - **mx.compile**: Fuses ops. Use `inputs/outputs` for state tracking. Avoid changing Python scalar constants (causes recompilation).
 - **Type promotion**: Use Python scalars (not `mx.array`) for constants in bf16 code
 
-## Current State (v0.7.1)
+## Current State (v0.7.2)
 
 - DEPTH=4, DEVICE_BATCH_SIZE=16 (baseline reset for performance catch-up)
 - 5-group MultiOptimizer: Muon (matrix), AdamW (embeds, x0_lambdas, resid_lambdas, fallback)

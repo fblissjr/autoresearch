@@ -120,15 +120,23 @@ The agent runs autonomously on a dedicated branch. It never pushes to remote. Th
 
 ## Running the agent
 
+Experiment skills are provided via the `experiment-plugin/` Claude Code plugin. Load it with `--plugin-dir`:
+
+```bash
+claude --plugin-dir ./experiment-plugin
+```
+
+Recommended alias: `alias ar='claude --plugin-dir ./experiment-plugin'`
+
 ### Interactive mode
 
 ```bash
-claude
+ar
 ```
 
-Then paste:
+Then:
 ```
-Read program.md and follow the instructions. Let's use run tag "mar15".
+/experiment:model mar15
 ```
 
 ### Autonomous mode (unattended)
@@ -137,29 +145,37 @@ The project ships `.claude/settings.json` with a scoped allowlist. `git push` is
 
 ```bash
 # Model experiments
-claude -p "Read program.md and follow the experiment loop instructions. Run tag: mar15. Dataset: climbmix. Do not ask for confirmation -- start the loop immediately."
+ar -p "/experiment:model mar15"
 
 # Data experiments
-claude -p "Read program_data.md and follow the experiment loop instructions. Run tag: mar15-data. Dataset: climbmix. Do not ask for confirmation -- start the loop immediately."
+ar -p "/experiment:data mar15-data"
 ```
+
+### Other skills
+
+| Skill | Description |
+|-------|-------------|
+| `/experiment:run` | Single experiment cycle (commit, train, extract, log) |
+| `/experiment:compare [N]` | Compare recent training runs |
 
 See [docs/guide.md](docs/guide.md) for full details on permissions, safety, and tuning for smaller machines.
 
 ## Project structure
 
 ```
-train.py          - model, optimizer, training loop (model program edits)
-prepare.py        - data prep, tokenizer, dataloader, evaluate_bpb (data program edits)
-data_sources.py   - dataset registry and configuration (data program edits)
-log_utils.py      - structured output, diagnostics, logging
-program.md        - model experiment agent instructions
-program_data.md   - data experiment agent instructions
-bench.py          - performance profiling (compiled vs uncompiled)
-analysis.py       - experiment results analysis (reads run_*.json + results.tsv)
-docs/guide.md     - usage guide for all modes
-tests/            - test suite
-data/             - run archives (last_run.json, run_*.json, bench_*.json)
-internal/log/     - session-by-session development notes
+train.py              - model, optimizer, training loop (model program edits)
+prepare.py            - data prep, tokenizer, dataloader, evaluate_bpb (data program edits)
+data_sources.py       - dataset registry and configuration (data program edits)
+log_utils.py          - structured output, diagnostics, logging
+program.md            - model experiment agent instructions
+program_data.md       - data experiment agent instructions
+experiment-plugin/    - Claude Code plugin (skills: model, data, run, compare; agent: experiment-reviewer)
+bench.py              - performance profiling (compiled vs uncompiled)
+analysis.py           - experiment results analysis (reads run_*.json + results.tsv)
+docs/guide.md         - usage guide for all modes
+tests/                - test suite
+data/                 - run archives (last_run.json, run_*.json, bench_*.json)
+internal/log/         - session-by-session development notes
 ```
 
 ## Current results (v0.7.1)

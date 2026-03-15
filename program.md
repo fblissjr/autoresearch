@@ -2,6 +2,8 @@
 
 This is an experiment to have the LLM do its own research.
 
+**Launch this loop**: `/experiment:model <tag> [dataset]` (requires `--plugin-dir ./experiment-plugin`)
+
 ## Setup
 
 To set up a new experiment, work with the user to:

@@ -1,0 +1,6 @@
+{
+  "name": "experiment",
+  "version": "1.0.0",
+  "description": "Autonomous ML experiment loops for autoresearch-mlx",
+  "author": { "name": "Fred Bliss" }
+}

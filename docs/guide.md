@@ -54,7 +54,23 @@ Infrastructure improvements to throughput, hardware utilization, or developer to
 
 ## Running with Claude Code
 
-Both experiment programs (model and data) are designed to run as autonomous loops inside Claude Code. Two modes are supported.
+Both experiment programs (model and data) are designed to run as autonomous loops inside Claude Code. The `experiment-plugin/` directory provides namespaced skills for launching experiments.
+
+### Loading the plugin
+
+The experiment skills require the plugin to be loaded:
+
+```bash
+claude --plugin-dir ./experiment-plugin
+```
+
+Recommended shell alias (add to your `.zshrc` or `.bashrc`):
+
+```bash
+alias ar='claude --plugin-dir ./experiment-plugin'
+```
+
+Then just use `ar` to start Claude Code with the experiment plugin.
 
 ### Run tags
 
@@ -71,22 +87,31 @@ Recommended convention: `<date>-<focus>` or just `<date>`. Examples:
 
 Tags must be unique -- the agent will refuse to reuse an existing branch. This lets you run multiple sessions and tell them apart in `git log`.
 
+### Available skills
+
+| Skill | Description |
+|-------|-------------|
+| `/experiment:model <tag> [dataset]` | Launch autonomous model experiment loop (edits train.py) |
+| `/experiment:data <tag> [dataset]` | Launch autonomous data experiment loop (edits prepare.py + data_sources.py) |
+| `/experiment:run [description]` | Run a single experiment cycle (commit, train, extract, log) |
+| `/experiment:compare [count]` | Compare recent training runs |
+
 ### Interactive mode (human-in-the-loop)
 
-Start Claude Code normally and reference the program file. The agent will ask for setup confirmation and permission for each tool call.
+Start Claude Code with the plugin and use a skill:
 
 ```bash
-claude
+claude --plugin-dir ./experiment-plugin
 ```
 
-Then paste:
+Then:
 ```
-Read program.md and follow the instructions. Let's use run tag "mar15".
+/experiment:model mar15
 ```
 
 Or for data experiments:
 ```
-Read program_data.md and follow the instructions. Let's use run tag "mar15-data".
+/experiment:data mar15-data
 ```
 
 ### Autonomous mode (unattended)
@@ -95,14 +120,20 @@ For overnight or hands-free runs where no human is present to approve tool calls
 
 **Step 1: Permissions are pre-configured.** The project ships `.claude/settings.json` with a scoped allowlist covering all experiment operations (file reads/edits, git commits, training runs, result extraction). `git push` is explicitly denied -- the agent works locally only.
 
-**Step 2: Launch with a non-interactive prompt.** Use `-p` to provide the full prompt upfront so the agent doesn't need to ask for input:
+**Step 2: Launch with a non-interactive prompt.** Use `-p` to provide the full prompt upfront:
 
 ```bash
 # Model experiments
-claude -p "Read program.md and follow the experiment loop instructions. Run tag: mar15. Dataset: climbmix. Do not ask for confirmation -- start the loop immediately."
+claude --plugin-dir ./experiment-plugin -p "/experiment:model mar15"
 
 # Data experiments
-claude -p "Read program_data.md and follow the experiment loop instructions. Run tag: mar15-data. Dataset: climbmix. Do not ask for confirmation -- start the loop immediately."
+claude --plugin-dir ./experiment-plugin -p "/experiment:data mar15-data"
+```
+
+Or with the alias:
+```bash
+ar -p "/experiment:model mar15"
+ar -p "/experiment:data mar15-data"
 ```
 
 **Step 3: Walk away.** The agent will run experiments until interrupted with Ctrl+C.
