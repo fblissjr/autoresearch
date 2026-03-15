@@ -109,7 +109,6 @@ The committed `.claude/settings.json` allows:
 
 ### Safety notes
 
-- **File path enforcement**: A PreToolUse hook (pure shell, inlined in `settings.json`) blocks all Read/Edit/Write operations targeting files outside the project directory. Uses `realpath` to catch traversal (`../../.ssh/id_rsa`) and prefix-spoofing (`autoresearch-mlx-evil/`). Fails closed on parse errors. Test script at `.claude/hooks/check_file_path.py`.
 - The agent works on a dedicated branch (`autoresearch/<tag>` or `autoresearch-data/<tag>`). Master is never modified.
 - `git reset --hard` is allowed because the experiment loop uses it to discard failed experiments on the experiment branch. This is expected and safe.
 - The agent commits frequently (one commit per experiment). If something goes wrong, `git log` and `git reset` can recover any state.

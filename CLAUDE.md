@@ -105,7 +105,6 @@ Key fields in `last_run.json`: `result.val_bpb`, `training.peak_memory_mb`, `tra
 - `internal/log/` is committed -- open research repo
 - `data/` tracked via `.gitkeep`, contents gitignored
 - `run.log` and `results.tsv` are gitignored
-- A PreToolUse hook in `.claude/settings.json` blocks file operations outside the project directory. If you need to read external files (e.g., cached data), use Bash instead of Read.
 - Never include absolute paths, usernames, or system-specific details in committed files
 - Use neutral language when referencing other implementations (not "competing", "rival", etc.)
 

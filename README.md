@@ -184,7 +184,6 @@ DEPTH=4, 5-group MultiOptimizer (Muon + AdamW), Muon momentum ramp 0.85->0.95, w
 - Autonomous data experiment loop alongside the model experiment loop
 - Structured JSON output (`data/last_run.json`) for machine-readable results -- upstream uses grep-from-stdout only
 - Scoped Claude Code permissions for safe unattended operation
-- File path enforcement hook for sandboxed agent execution
 
 ## Documentation
 

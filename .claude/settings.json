@@ -36,18 +36,5 @@
       "Bash(uv run python -c:*)",
       "Bash(uv run --script:*)"
     ]
-  },
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Read|Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "FP=$(cat | sed -n 's/.*\"file_path\" *: *\"\\([^\"]*\\)\".*/\\1/p' | head -1); [ -z \"$FP\" ] && exit 2; RD=$(realpath \"${CLAUDE_PROJECT_DIR:-.}\" 2>/dev/null); RF=$(realpath \"$FP\" 2>/dev/null || echo \"$(realpath \"$(dirname \"$FP\")\" 2>/dev/null || dirname \"$FP\")/$(basename \"$FP\")\"); case \"$RF\" in \"$RD\"/*|\"$RD\") exit 0 ;; *) echo \"BLOCKED: file operation outside project: $FP\" >&2; exit 2 ;; esac"
-          }
-        ]
-      }
-    ]
   }
 }

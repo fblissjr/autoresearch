@@ -8,7 +8,6 @@
   - `run.log` retained for crash diagnostics and progress monitoring
 - Update program.md, program_data.md, run-experiment skill, docs/guide.md, CLAUDE.md
 - Tighten autonomous mode permissions: scope `uv run` to specific scripts, `pkill` to training processes only; deny `uv run python -c` and `--script`
-- Add PreToolUse file path enforcement hook (pure shell, no python3 subprocess): blocks Read/Edit/Write outside project directory, catches path traversal via `realpath`, fails closed on parse errors
 - `save_json`: replace magic string prefix check with explicit `write_latest` kwarg
 - Fix run-experiment skill: results.tsv template was 5 columns (missing avg_tok_sec), now 6
 - Update internal/data-investigations.md: fix stale shard count (2 -> 20 since v0.5.2)
